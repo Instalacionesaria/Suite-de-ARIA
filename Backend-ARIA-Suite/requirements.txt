@@ -1,7 +1,16 @@
+# FastAPI y servidor
 fastapi==0.135.1
 uvicorn==0.41.0
 pydantic==2.12.5
+
+# Utilidades
 python-dotenv==1.2.2
+requests>=2.31.0
+
+# Apify (scraping)
+apify-client>=1.6.0
+
+# LangChain + OpenAI (agente de onboarding)
 langchain==1.2.12
 langchain-core==1.2.18
 langchain-openai==1.1.11
