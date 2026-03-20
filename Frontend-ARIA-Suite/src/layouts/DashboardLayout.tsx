@@ -6,10 +6,10 @@ import HighLevelPanel from '@/components/HighLevelPanel'
 
 const NAV_ITEMS = [
   {
-    label: 'Recarga de Leads',
-    to: '/dashboard/recarga',
-    icon: '⚡',
-    description: 'Planes y créditos',
+    label: 'Onboarding',
+    to: '/dashboard/onboarding',
+    icon: '🤖',
+    description: 'Asistente IA',
   },
   {
     label: 'Scraper',
@@ -30,10 +30,10 @@ const NAV_ITEMS = [
     description: 'Email y WhatsApp',
   },
   {
-    label: 'Onboarding',
-    to: '/dashboard/onboarding',
-    icon: '🤖',
-    description: 'Asistente IA',
+    label: 'Recarga de Leads',
+    to: '/dashboard/recarga',
+    icon: '⚡',
+    description: 'Planes y créditos',
   },
 ]
 

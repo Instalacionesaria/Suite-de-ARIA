@@ -58,20 +58,6 @@ export default function HighLevelPanel() {
 
       <Separator />
 
-      {/* Etiqueta */}
-      <div className="space-y-1.5">
-        <Label className="text-sm font-semibold text-gray-900">Etiqueta para High Level</Label>
-        <Input
-          placeholder="Ej: Leads Peluquerías Lima - Enero 2025"
-          className="h-9 text-sm border-purple-200 focus-visible:ring-purple-500/30 focus-visible:border-purple-400"
-        />
-        <p className="text-[10px] text-gray-400">
-          Esta etiqueta te ayudará a identificar y organizar tus leads en High Level (máx. 30 caracteres)
-        </p>
-      </div>
-
-      <Separator />
-
       {/* Location ID */}
       <div className="space-y-1.5">
         <Label className="text-sm font-semibold text-gray-900">Location ID</Label>
@@ -81,6 +67,20 @@ export default function HighLevelPanel() {
         />
         <p className="text-[10px] text-gray-400">
           Encuentra tu Location ID en tu cuenta de High Level → Settings → Business Profile
+        </p>
+      </div>
+
+      <Separator />
+
+      {/* Etiqueta */}
+      <div className="space-y-1.5">
+        <Label className="text-sm font-semibold text-gray-900">Etiqueta para High Level</Label>
+        <Input
+          placeholder="Ej: Leads Peluquerías Lima - Enero 2025"
+          className="h-9 text-sm border-purple-200 focus-visible:ring-purple-500/30 focus-visible:border-purple-400"
+        />
+        <p className="text-[10px] text-gray-400">
+          Esta etiqueta te ayudará a identificar y organizar tus leads en High Level (máx. 30 caracteres)
         </p>
       </div>
 

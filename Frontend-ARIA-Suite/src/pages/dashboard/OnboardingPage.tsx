@@ -14,15 +14,15 @@ const WELCOME_MESSAGE: Message = {
   id: 'welcome',
   role: 'assistant',
   content:
-    '¡Hola! 👋 Soy el asistente de ARIA Suite. Estoy aquí para ayudarte a configurar tu cuenta y sacarle el máximo provecho a la plataforma.\n\n¿En qué puedo ayudarte hoy?',
+    '¡Hola! 👋 Soy el asistente de onboarding de ARIA Suite. Voy a ayudarte a configurar tu cuenta conociendo un poco sobre tu negocio.\n\nCuéntame, ¿a qué se dedica tu negocio?',
   timestamp: new Date(),
 }
 
 const QUICK_ACTIONS = [
-  '¿Cómo inicio mi primer scraping?',
-  '¿Cómo configuro HighLevel?',
-  '¿Cómo envío correos a mis leads?',
-  'Quiero entender los planes',
+  'Tengo una peluquería',
+  'Soy dueño de un restaurante',
+  'Tengo una agencia de marketing',
+  'Vendo productos online',
 ]
 
 export default function OnboardingPage() {
@@ -50,23 +50,51 @@ export default function OnboardingPage() {
       timestamp: new Date(),
     }
 
-    setMessages((prev) => [...prev, userMessage])
+    const updatedMessages = [...messages, userMessage]
+    setMessages(updatedMessages)
     setInput('')
     setIsLoading(true)
 
-    // TODO: Replace with OpenAI API call
-    await new Promise((resolve) => setTimeout(resolve, 1200))
+    try {
+      // Construir historial sin el welcome message ni el mensaje actual
+      const history = updatedMessages
+        .filter((m) => m.id !== 'welcome')
+        .slice(0, -1) // excluir el mensaje actual (va en "message")
+        .map((m) => ({ role: m.role, content: m.content }))
 
-    const assistantMessage: Message = {
-      id: crypto.randomUUID(),
-      role: 'assistant',
-      content:
-        'Estoy en modo demo por ahora. Pronto seré conectado a OpenAI para darte respuestas inteligentes sobre cómo usar ARIA Suite. 🚀',
-      timestamp: new Date(),
+      const res = await fetch('http://localhost:8000/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: content.trim(), history }),
+      })
+
+      const data = await res.json()
+
+      // Si el agente extrajo datos, guardarlos en localStorage
+      if (data.extracted_data) {
+        localStorage.setItem('aria_onboarding_data', JSON.stringify(data.extracted_data))
+      }
+
+      const assistantMessage: Message = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: data.response,
+        timestamp: new Date(),
+      }
+
+      setMessages((prev) => [...prev, assistantMessage])
+    } catch {
+      const errorMessage: Message = {
+        id: crypto.randomUUID(),
+        role: 'assistant',
+        content: 'No pude conectarme al servidor. Verifica que el backend esté corriendo en http://localhost:8000',
+        timestamp: new Date(),
+      }
+
+      setMessages((prev) => [...prev, errorMessage])
+    } finally {
+      setIsLoading(false)
     }
-
-    setMessages((prev) => [...prev, assistantMessage])
-    setIsLoading(false)
   }
 
   const handleSubmit = (e: React.FormEvent) => {

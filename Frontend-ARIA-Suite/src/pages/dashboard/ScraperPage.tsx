@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -75,6 +75,19 @@ const formAnimation = {
 
 function MapsForm() {
   const [enrichPremium, setEnrichPremium] = useState(false)
+  const [businessType, setBusinessType] = useState('')
+  const [location, setLocation] = useState('')
+
+  useEffect(() => {
+    const raw = localStorage.getItem('aria_onboarding_data')
+    if (raw) {
+      try {
+        const data = JSON.parse(raw)
+        if (data.tipo_negocio) setBusinessType(data.tipo_negocio)
+        if (data.localizacion) setLocation(data.localizacion)
+      } catch { /* ignore */ }
+    }
+  }, [])
 
   return (
     <motion.div {...formAnimation} className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
@@ -87,11 +100,11 @@ function MapsForm() {
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
         <div className="space-y-1.5">
           <Label htmlFor="business-type" className="text-sm text-gray-600">Tipo de Negocio</Label>
-          <Input id="business-type" placeholder="Ej: Peluquería" className="h-10" />
+          <Input id="business-type" placeholder="Ej: Peluquería" className="h-10" value={businessType} onChange={(e) => setBusinessType(e.target.value)} />
         </div>
         <div className="space-y-1.5">
           <Label htmlFor="location" className="text-sm text-gray-600">Localización</Label>
-          <Input id="location" placeholder="Ej: Miraflores, Lima" className="h-10" />
+          <Input id="location" placeholder="Ej: Cayma, Arequipa, Perú" className="h-10" value={location} onChange={(e) => setLocation(e.target.value)} />
         </div>
       </div>
 
