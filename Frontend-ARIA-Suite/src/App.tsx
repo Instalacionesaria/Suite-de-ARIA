@@ -7,6 +7,7 @@ import ScraperPage from '@/pages/dashboard/ScraperPage'
 import LeadsPage from '@/pages/dashboard/LeadsPage'
 import OutreachPage from '@/pages/dashboard/OutreachPage'
 import OnboardingPage from '@/pages/dashboard/OnboardingPage'
+import HighLevelMCPPage from '@/pages/dashboard/HighLevelMCPPage'
 
 export default function App() {
   return (
@@ -21,6 +22,7 @@ export default function App() {
             <Route path="leads" element={<LeadsPage />} />
             <Route path="outreach" element={<OutreachPage />} />
             <Route path="onboarding" element={<OnboardingPage />} />
+            <Route path="highlevel" element={<HighLevelMCPPage />} />
           </Route>
         </Routes>
       </BrowserRouter>

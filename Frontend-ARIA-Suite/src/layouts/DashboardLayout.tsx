@@ -35,6 +35,12 @@ const NAV_ITEMS = [
     icon: '⚡',
     description: 'Planes y créditos',
   },
+  {
+    label: 'Acceso MCP HighLevel',
+    to: '/dashboard/highlevel',
+    icon: '🔗',
+    description: 'Subcuenta HighLevel',
+  },
 ]
 
 const LEADS_SCRAPED = 40

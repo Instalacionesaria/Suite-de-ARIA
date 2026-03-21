@@ -43,10 +43,10 @@ except ImportError:
     print("⚠️ envio_de_correo no disponible aún")
 
 try:
-    from tools.highlevel_mcp import ejecutar_orden_highlevel
+    from tools_scrapers.highlevel_mcp import ejecutar_orden_highlevel
 except ImportError:
     ejecutar_orden_highlevel = None
-    print("⚠️ tools.highlevel_mcp no disponible aún")
+    print("⚠️ highlevel_mcp no disponible aún")
 
 
 # =============================================

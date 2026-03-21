@@ -10,9 +10,11 @@ requests>=2.31.0
 # Apify (scraping)
 apify-client>=1.6.0
 
-# LangChain + OpenAI (agente de onboarding)
+# LangChain + OpenAI (agente de onboarding + HighLevel MCP)
 langchain==1.2.12
 langchain-core==1.2.18
 langchain-openai==1.1.11
+langchain-mcp-adapters>=0.1.0
+langgraph>=0.2.0
 openai==2.26.0
 tiktoken==0.12.0
