@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { API_URL } from '@/config'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -62,7 +63,7 @@ export default function OnboardingPage() {
         .slice(0, -1) // excluir el mensaje actual (va en "message")
         .map((m) => ({ role: m.role, content: m.content }))
 
-      const res = await fetch('http://localhost:8000/chat', {
+      const res = await fetch(`${API_URL}/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ message: content.trim(), history }),
@@ -87,7 +88,7 @@ export default function OnboardingPage() {
       const errorMessage: Message = {
         id: crypto.randomUUID(),
         role: 'assistant',
-        content: 'No pude conectarme al servidor. Verifica que el backend esté corriendo en http://localhost:8000',
+        content: 'No pude conectarme al servidor. Verifica que el backend esté corriendo.',
         timestamp: new Date(),
       }
 

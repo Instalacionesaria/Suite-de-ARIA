@@ -154,6 +154,7 @@ origins = [
     "http://localhost:5175",
     "https://leads.ariaia.com",
     "https://aria-scrapper.vercel.app",
+    "https://frontend-aria-suite-2026.vercel.app",
 ]
 
 app.add_middleware(

@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { API_URL } from '@/config'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -109,7 +110,7 @@ function MapsForm() {
 
     const poll = async () => {
       try {
-        const res = await fetch(`http://localhost:8000/job/${jobId}`)
+        const res = await fetch(`${API_URL}/job/${jobId}`)
         const data = await res.json()
 
         if (data.status === 'COMPLETED') {
@@ -158,7 +159,7 @@ function MapsForm() {
     setResults([])
 
     try {
-      const res = await fetch('http://localhost:8000/start-scraping', {
+      const res = await fetch(`${API_URL}/start-scraping`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -399,7 +400,7 @@ function FacebookForm() {
 
     const poll = async () => {
       try {
-        const res = await fetch(`http://localhost:8000/job/${jobId}`)
+        const res = await fetch(`${API_URL}/job/${jobId}`)
         const data = await res.json()
 
         if (data.status === 'COMPLETED') {
@@ -436,7 +437,7 @@ function FacebookForm() {
     setAdsResults([])
 
     try {
-      const res = await fetch('http://localhost:8000/start-facebook-ads-scraping', {
+      const res = await fetch(`${API_URL}/start-facebook-ads-scraping`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -475,7 +476,7 @@ function FacebookForm() {
     }))
 
     try {
-      const res = await fetch('http://localhost:8000/start-facebook-pages-scraping', {
+      const res = await fetch(`${API_URL}/start-facebook-pages-scraping`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { API_URL } from '@/config'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
@@ -43,7 +44,7 @@ export default function HighLevelMCPPage() {
     setIsLoading(true)
 
     try {
-      const res = await fetch('http://localhost:8000/highlevel-mcp', {
+      const res = await fetch(`${API_URL}/highlevel-mcp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -67,7 +68,7 @@ export default function HighLevelMCPPage() {
       const errorMessage: Message = {
         id: crypto.randomUUID(),
         role: 'assistant',
-        content: 'No pude conectarme al servidor. Verifica que el backend este corriendo en http://localhost:8000',
+        content: 'No pude conectarme al servidor. Verifica que el backend este corriendo.',
         timestamp: new Date(),
       }
       setMessages((prev) => [...prev, errorMessage])
