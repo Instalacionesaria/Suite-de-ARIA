@@ -367,6 +367,23 @@ async def login(request: LoginRequest):
     }
 
 
+# --- User Leads (para sidebar) ---
+@app.get("/user-leads")
+async def get_user_leads(email: str):
+    headers = get_supabase_headers()
+    response = requests.get(
+        f"{SUPABASE_URL}/rest/v1/usuarios_scraper?correo_electronico=eq.{email}&select=numero_leads_scrapeados,leads_disponibles_en_total",
+        headers=headers,
+    )
+    if not response.json():
+        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+    usuario = response.json()[0]
+    return {
+        "numero_leads_scrapeados": usuario.get("numero_leads_scrapeados", 0),
+        "leads_disponibles_en_total": usuario.get("leads_disponibles_en_total", 0),
+    }
+
+
 # --- Onboarding Chat (Agente IA) ---
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):

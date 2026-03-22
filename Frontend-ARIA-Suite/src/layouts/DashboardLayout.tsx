@@ -1,8 +1,10 @@
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
+import { useState, useEffect, useCallback } from 'react'
 import { motion } from 'framer-motion'
 import { Progress } from '@/components/ui/progress'
 import { Separator } from '@/components/ui/separator'
 import HighLevelPanel from '@/components/HighLevelPanel'
+import { API_URL } from '@/config'
 
 const NAV_ITEMS = [
   {
@@ -43,12 +45,31 @@ const NAV_ITEMS = [
   },
 ]
 
-const LEADS_SCRAPED = 40
-const LEADS_TOTAL = 2000
-const LEADS_REMAINING = LEADS_TOTAL - LEADS_SCRAPED
-
 export default function DashboardLayout() {
   const navigate = useNavigate()
+  const [leadsScraped, setLeadsScraped] = useState(0)
+  const [leadsRemaining, setLeadsRemaining] = useState(0)
+
+  const fetchLeads = useCallback(async () => {
+    const email = localStorage.getItem('aria_user_email')
+    if (!email) return
+    try {
+      const res = await fetch(`${API_URL}/user-leads?email=${encodeURIComponent(email)}`)
+      if (res.ok) {
+        const data = await res.json()
+        setLeadsScraped(data.numero_leads_scrapeados)
+        setLeadsRemaining(data.leads_disponibles_en_total)
+      }
+    } catch {
+      // silently ignore
+    }
+  }, [])
+
+  useEffect(() => {
+    fetchLeads()
+    const interval = setInterval(fetchLeads, 30000)
+    return () => clearInterval(interval)
+  }, [fetchLeads])
 
   return (
     <div className="min-h-screen flex bg-gray-50">
@@ -109,12 +130,12 @@ export default function DashboardLayout() {
         <div className="px-5 py-4 space-y-3">
           <div className="flex items-center justify-between text-xs">
             <span className="text-gray-400">Leads Scrapeados</span>
-            <span className="font-bold text-white">{LEADS_SCRAPED}</span>
+            <span className="font-bold text-white">{leadsScraped}</span>
           </div>
-          <Progress value={(LEADS_SCRAPED / LEADS_TOTAL) * 100} className="h-1.5 bg-gray-700" />
+          <Progress value={leadsScraped + leadsRemaining > 0 ? (leadsScraped / (leadsScraped + leadsRemaining)) * 100 : 0} className="h-1.5 bg-gray-700" />
           <div className="flex items-center justify-between text-xs">
             <span className="text-gray-400">Leads Restantes</span>
-            <span className="font-bold text-emerald-400">{LEADS_REMAINING}</span>
+            <span className="font-bold text-emerald-400">{leadsRemaining}</span>
           </div>
 
           <button
