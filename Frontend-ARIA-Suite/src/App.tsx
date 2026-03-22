@@ -16,7 +16,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<LoginPage />} />
           <Route path="/dashboard" element={<DashboardLayout />}>
-            <Route index element={<Navigate to="recarga" replace />} />
+            <Route index element={<Navigate to="onboarding" replace />} />
             <Route path="recarga" element={<RecargaPage />} />
             <Route path="scraper" element={<ScraperPage />} />
             <Route path="leads" element={<LeadsPage />} />

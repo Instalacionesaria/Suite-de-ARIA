@@ -73,10 +73,24 @@ const formAnimation = {
   exit: { opacity: 0, y: -12, transition: { duration: 0.2 } },
 }
 
+interface Lead {
+  title?: string
+  categoryName?: string
+  address?: string
+  phone?: string
+  website?: string
+  email?: string
+  [key: string]: unknown
+}
+
 function MapsForm() {
   const [enrichPremium, setEnrichPremium] = useState(false)
   const [businessType, setBusinessType] = useState('')
   const [location, setLocation] = useState('')
+  const [isLoading, setIsLoading] = useState(false)
+  const [isPolling, setIsPolling] = useState(false)
+  const [status, setStatus] = useState<{ type: 'success' | 'error' | 'polling'; message: string } | null>(null)
+  const [results, setResults] = useState<Lead[]>([])
 
   useEffect(() => {
     const raw = localStorage.getItem('aria_onboarding_data')
@@ -89,40 +103,236 @@ function MapsForm() {
     }
   }, [])
 
+  const pollJobStatus = async (jobId: string) => {
+    setIsPolling(true)
+    setStatus({ type: 'polling', message: 'Scrapeando leads... Esto puede tomar unos minutos.' })
+
+    const poll = async () => {
+      try {
+        const res = await fetch(`http://localhost:8000/job/${jobId}`)
+        const data = await res.json()
+
+        if (data.status === 'COMPLETED') {
+          setIsPolling(false)
+          setIsLoading(false)
+          const leads = data.results?.data || []
+          setResults(leads)
+          setStatus({ type: 'success', message: `Scraping completado. ${leads.length} leads encontrados.` })
+          return
+        }
+
+        if (data.status === 'FAILED') {
+          setIsPolling(false)
+          setIsLoading(false)
+          setStatus({ type: 'error', message: 'El scraping falló. Intenta de nuevo.' })
+          return
+        }
+
+        if (data.status === 'CANCELLED') {
+          setIsPolling(false)
+          setIsLoading(false)
+          setStatus({ type: 'error', message: 'El scraping fue cancelado.' })
+          return
+        }
+
+        // Seguir haciendo polling
+        setTimeout(poll, 5000)
+      } catch {
+        setIsPolling(false)
+        setIsLoading(false)
+        setStatus({ type: 'error', message: 'Error al consultar el estado del scraping.' })
+      }
+    }
+
+    poll()
+  }
+
+  const handleStartScraping = async () => {
+    if (!businessType.trim() || !location.trim()) {
+      setStatus({ type: 'error', message: 'Completa el tipo de negocio y la localización.' })
+      return
+    }
+
+    setIsLoading(true)
+    setStatus(null)
+    setResults([])
+
+    try {
+      const res = await fetch('http://localhost:8000/start-scraping', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          businessType: businessType.trim(),
+          location: location.trim(),
+          getEmails: enrichPremium,
+          getBusinessModel: false,
+          timestamp: new Date().toISOString(),
+          userId: localStorage.getItem('aria_user_id') || '',
+          correo_electronico: localStorage.getItem('aria_user_email') || '',
+        }),
+      })
+
+      const data = await res.json()
+
+      if (!res.ok) {
+        setStatus({ type: 'error', message: data.detail || 'Error al iniciar el scraping.' })
+        setIsLoading(false)
+        return
+      }
+
+      // Iniciar polling
+      pollJobStatus(data.jobId)
+    } catch {
+      setStatus({ type: 'error', message: 'No se pudo conectar al servidor. Verifica que el backend esté corriendo.' })
+      setIsLoading(false)
+    }
+  }
+
   return (
-    <motion.div {...formAnimation} className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
-      <div className="flex items-center gap-2 mb-5">
-        <span className="text-xl">🗺️</span>
-        <h2 className="text-lg font-semibold text-gray-900">Google Maps</h2>
-        <Badge className="bg-blue-50 text-blue-600 border-blue-200 text-[10px]">Scraper</Badge>
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
-        <div className="space-y-1.5">
-          <Label htmlFor="business-type" className="text-sm text-gray-600">Tipo de Negocio</Label>
-          <Input id="business-type" placeholder="Ej: Peluquería" className="h-10" value={businessType} onChange={(e) => setBusinessType(e.target.value)} />
+    <motion.div {...formAnimation} className="space-y-5">
+      <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
+        <div className="flex items-center gap-2 mb-5">
+          <span className="text-xl">🗺️</span>
+          <h2 className="text-lg font-semibold text-gray-900">Google Maps</h2>
+          <Badge className="bg-blue-50 text-blue-600 border-blue-200 text-[10px]">Scraper</Badge>
         </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="location" className="text-sm text-gray-600">Localización</Label>
-          <Input id="location" placeholder="Ej: Cayma, Arequipa, Perú" className="h-10" value={location} onChange={(e) => setLocation(e.target.value)} />
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="business-type" className="text-sm text-gray-600">Tipo de Negocio</Label>
+            <Input id="business-type" placeholder="Ej: Peluquería" className="h-10" value={businessType} onChange={(e) => setBusinessType(e.target.value)} />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="location" className="text-sm text-gray-600">Localización</Label>
+            <Input id="location" placeholder="Ej: Cayma, Arequipa, Perú" className="h-10" value={location} onChange={(e) => setLocation(e.target.value)} />
+          </div>
         </div>
+
+        <div className="flex items-center gap-2 mb-5">
+          <Checkbox
+            id="enrich"
+            checked={enrichPremium}
+            onCheckedChange={(v) => setEnrichPremium(v === true)}
+          />
+          <Label htmlFor="enrich" className="text-sm text-gray-600 cursor-pointer">
+            Enriquecer con Datos Premium (Ejm: Emails, Perfil LinkedIn, etc)
+          </Label>
+        </div>
+
+        {status && (
+          <div className={`mb-4 px-4 py-3 rounded-xl text-sm flex items-center gap-2 ${
+            status.type === 'success'
+              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+              : status.type === 'polling'
+                ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                : 'bg-red-50 text-red-700 border border-red-200'
+          }`}>
+            {status.type === 'polling' && (
+              <span className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin shrink-0" />
+            )}
+            {status.message}
+          </div>
+        )}
+
+        <Button
+          onClick={handleStartScraping}
+          disabled={isLoading || isPolling}
+          className="bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm cursor-pointer disabled:opacity-50"
+        >
+          {isPolling ? 'Scrapeando...' : isLoading ? 'Iniciando...' : '🚀 Iniciar Scraping'}
+        </Button>
       </div>
 
-      <div className="flex items-center gap-2 mb-5">
-        <Checkbox
-          id="enrich"
-          checked={enrichPremium}
-          onCheckedChange={(v) => setEnrichPremium(v === true)}
-        />
-        <Label htmlFor="enrich" className="text-sm text-gray-600 cursor-pointer">
-          Enriquecer con Datos Premium (Ejm: Emails, Perfil LinkedIn, etc)
-        </Label>
-      </div>
-
-      <Button className="bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm cursor-pointer">
-        🚀 Iniciar Scraping
-      </Button>
+      {/* Tabla de resultados */}
+      {results.length > 0 && <LeadsTable leads={results} />}
     </motion.div>
+  )
+}
+
+const COLUMN_LABELS: Record<string, string> = {
+  title: 'Nombre',
+  categoryName: 'Categoria',
+  address: 'Direccion',
+  neighborhood: 'Barrio',
+  street: 'Calle',
+  website: 'Sitio Web',
+  phone: 'Telefono',
+  phoneUnformatted: 'Tel. sin formato',
+  fullName: 'Nombre Completo',
+  jobTitle: 'Cargo',
+  email: 'Email',
+  emails: 'Emails',
+  linkedinProfile: 'LinkedIn',
+  mobileNumber: 'Celular',
+  companyName: 'Empresa',
+  companyWebsite: 'Web Empresa',
+  companyLinkedin: 'LinkedIn Empresa',
+  companyPhoneNumber: 'Tel. Empresa',
+  companySize: 'Tamaño Empresa',
+  industry: 'Industria',
+  city: 'Ciudad',
+  businessModel: 'Modelo de Negocio',
+}
+
+function LeadsTable({ leads }: { leads: Lead[] }) {
+  // Obtener columnas que tengan al menos un valor no nulo
+  const columns = Object.keys(leads[0] || {}).filter((key) =>
+    leads.some((lead) => lead[key] != null && lead[key] !== '')
+  )
+
+  const renderCell = (value: unknown, key: string) => {
+    if (value == null || value === '') return <span className="text-gray-300">-</span>
+
+    const str = Array.isArray(value) ? value.join(', ') : String(value)
+
+    // Renderizar links para URLs y emails
+    if (key === 'website' || key === 'companyWebsite' || key === 'companyLinkedin' || key === 'linkedinProfile') {
+      return (
+        <a href={str} target="_blank" rel="noopener noreferrer" className="text-indigo-600 hover:underline truncate block max-w-[180px]">
+          {str.replace(/^https?:\/\//, '')}
+        </a>
+      )
+    }
+
+    if (key === 'email' || key === 'emails') {
+      return <span className="text-indigo-600">{str}</span>
+    }
+
+    return <span className="truncate block max-w-[200px]">{str}</span>
+  }
+
+  return (
+    <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+      <div className="px-6 py-4 border-b border-gray-200">
+        <h3 className="font-semibold text-gray-900">Resultados ({leads.length} leads)</h3>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-gray-50 border-b border-gray-200">
+              <th className="text-left px-4 py-3 font-medium text-gray-600 sticky left-0 bg-gray-50">#</th>
+              {columns.map((col) => (
+                <th key={col} className="text-left px-4 py-3 font-medium text-gray-600 whitespace-nowrap">
+                  {COLUMN_LABELS[col] || col}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {leads.map((lead, i) => (
+              <tr key={i} className="border-b border-gray-100 hover:bg-gray-50 transition-colors">
+                <td className="px-4 py-3 text-gray-400 sticky left-0 bg-white">{i + 1}</td>
+                {columns.map((col) => (
+                  <td key={col} className="px-4 py-3 text-gray-600 whitespace-nowrap">
+                    {renderCell(lead[col], col)}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
   )
 }
 
@@ -165,48 +375,215 @@ function LinkedInForm() {
 }
 
 function FacebookForm() {
+  const [adsUrl, setAdsUrl] = useState('')
+  const [adsLoading, setAdsLoading] = useState(false)
+  const [adsPolling, setAdsPolling] = useState(false)
+  const [adsStatus, setAdsStatus] = useState<{ type: 'success' | 'error' | 'polling'; message: string } | null>(null)
+  const [adsResults, setAdsResults] = useState<Lead[]>([])
+
+  const [pagesLoading, setPagesLoading] = useState(false)
+  const [pagesPolling, setPagesPolling] = useState(false)
+  const [pagesStatus, setPagesStatus] = useState<{ type: 'success' | 'error' | 'polling'; message: string } | null>(null)
+  const [pagesResults, setPagesResults] = useState<Lead[]>([])
+
+  const pollJob = async (
+    jobId: string,
+    setPolling: (v: boolean) => void,
+    setLoading: (v: boolean) => void,
+    setStatus: (v: { type: 'success' | 'error' | 'polling'; message: string }) => void,
+    setResults: (v: Lead[]) => void,
+    label: string,
+  ) => {
+    setPolling(true)
+    setStatus({ type: 'polling', message: `Scrapeando ${label}... Esto puede tomar unos minutos.` })
+
+    const poll = async () => {
+      try {
+        const res = await fetch(`http://localhost:8000/job/${jobId}`)
+        const data = await res.json()
+
+        if (data.status === 'COMPLETED') {
+          setPolling(false)
+          setLoading(false)
+          const leads = data.results?.data || []
+          setResults(leads)
+          setStatus({ type: 'success', message: `Completado. ${leads.length} resultados encontrados.` })
+          return
+        }
+        if (data.status === 'FAILED' || data.status === 'CANCELLED') {
+          setPolling(false)
+          setLoading(false)
+          setStatus({ type: 'error', message: `El scraping ${data.status === 'FAILED' ? 'falló' : 'fue cancelado'}.` })
+          return
+        }
+        setTimeout(poll, 5000)
+      } catch {
+        setPolling(false)
+        setLoading(false)
+        setStatus({ type: 'error', message: 'Error al consultar el estado del scraping.' })
+      }
+    }
+    poll()
+  }
+
+  const handleAdsStart = async () => {
+    if (!adsUrl.trim()) {
+      setAdsStatus({ type: 'error', message: 'Ingresa la URL de la biblioteca de anuncios.' })
+      return
+    }
+    setAdsLoading(true)
+    setAdsStatus(null)
+    setAdsResults([])
+
+    try {
+      const res = await fetch('http://localhost:8000/start-facebook-ads-scraping', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: adsUrl.trim(),
+          userId: localStorage.getItem('aria_user_id') || '',
+          correo_electronico: localStorage.getItem('aria_user_email') || '',
+          timestamp: new Date().toISOString(),
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setAdsStatus({ type: 'error', message: data.detail || 'Error al iniciar el scraping.' })
+        setAdsLoading(false)
+        return
+      }
+      pollJob(data.jobId, setAdsPolling, setAdsLoading, setAdsStatus, setAdsResults, 'Facebook Ads')
+    } catch {
+      setAdsStatus({ type: 'error', message: 'No se pudo conectar al servidor.' })
+      setAdsLoading(false)
+    }
+  }
+
+  const handlePagesStart = async () => {
+    if (adsResults.length === 0) {
+      setPagesStatus({ type: 'error', message: 'Primero completa el scraping de la biblioteca de anuncios.' })
+      return
+    }
+    setPagesLoading(true)
+    setPagesStatus(null)
+    setPagesResults([])
+
+    const pages = adsResults.map((ad) => ({
+      page_name: (ad.page_name as string) || '',
+      page_profile_uri: (ad.page_profile_uri as string) || '',
+      page_id: (ad.page_id as string) || '',
+    }))
+
+    try {
+      const res = await fetch('http://localhost:8000/start-facebook-pages-scraping', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pages,
+          userId: localStorage.getItem('aria_user_id') || '',
+          correo_electronico: localStorage.getItem('aria_user_email') || '',
+          timestamp: new Date().toISOString(),
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setPagesStatus({ type: 'error', message: data.detail || 'Error al iniciar el scraping.' })
+        setPagesLoading(false)
+        return
+      }
+      pollJob(data.jobId || data.job_id, setPagesPolling, setPagesLoading, setPagesStatus, setPagesResults, 'Facebook Pages')
+    } catch {
+      setPagesStatus({ type: 'error', message: 'No se pudo conectar al servidor.' })
+      setPagesLoading(false)
+    }
+  }
+
+  const StatusBanner = ({ status: s }: { status: { type: string; message: string } | null }) => {
+    if (!s) return null
+    return (
+      <div className={`mb-4 px-4 py-3 rounded-xl text-sm flex items-center gap-2 ${
+        s.type === 'success' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+          : s.type === 'polling' ? 'bg-blue-50 text-blue-700 border border-blue-200'
+          : 'bg-red-50 text-red-700 border border-red-200'
+      }`}>
+        {s.type === 'polling' && <span className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin shrink-0" />}
+        {s.message}
+      </div>
+    )
+  }
+
   return (
-    <motion.div {...formAnimation} className="grid grid-cols-1 sm:grid-cols-2 gap-5">
-      {/* Step 1: Biblioteca de Anuncios */}
-      <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm flex flex-col">
-        <div className="flex items-center gap-2 mb-1">
-          <h2 className="text-base font-semibold text-gray-900">Ingresa la URL de la biblioteca de anuncios</h2>
-        </div>
-
-        <div className="space-y-1.5 mb-5 mt-3">
-          <Label htmlFor="fb-ads-url" className="text-sm text-gray-600">
-            URL de la biblioteca de anuncios de Facebook
-          </Label>
-          <Input
-            id="fb-ads-url"
-            placeholder="https://www.facebook.com/ads/library/..."
-            className="h-10"
-          />
-        </div>
-
-        <Button className="bg-gray-500 hover:bg-gray-600 text-white shadow-sm cursor-pointer mt-auto w-full">
-          🔍 Iniciar scraping de esta biblioteca de anuncios
-        </Button>
-      </div>
-
-      {/* Step 2: Scraper de Página */}
-      <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm flex flex-col">
-        <div className="flex items-center gap-2 mb-1">
-          <h2 className="text-base font-semibold text-gray-900">Scraper de Página de Facebook</h2>
-        </div>
-
-        <div className="mt-3 mb-5 flex-1 flex items-center">
-          <div className="w-full rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
-            <p className="text-sm text-blue-700 leading-relaxed">
-              Primero completa el scraping de la biblioteca de anuncios para obtener las páginas a procesar.
-            </p>
+    <motion.div {...formAnimation} className="space-y-5">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+        {/* Step 1: Biblioteca de Anuncios */}
+        <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm flex flex-col">
+          <div className="flex items-center gap-2 mb-1">
+            <h2 className="text-base font-semibold text-gray-900">Ingresa la URL de la biblioteca de anuncios</h2>
           </div>
+
+          <div className="space-y-1.5 mb-5 mt-3">
+            <Label htmlFor="fb-ads-url" className="text-sm text-gray-600">
+              URL de la biblioteca de anuncios de Facebook
+            </Label>
+            <Input
+              id="fb-ads-url"
+              placeholder="https://www.facebook.com/ads/library/..."
+              className="h-10"
+              value={adsUrl}
+              onChange={(e) => setAdsUrl(e.target.value)}
+            />
+          </div>
+
+          <StatusBanner status={adsStatus} />
+
+          <Button
+            onClick={handleAdsStart}
+            disabled={adsLoading || adsPolling}
+            className="bg-gray-500 hover:bg-gray-600 text-white shadow-sm cursor-pointer mt-auto w-full disabled:opacity-50"
+          >
+            {adsPolling ? 'Scrapeando...' : adsLoading ? 'Iniciando...' : '🔍 Iniciar scraping de esta biblioteca de anuncios'}
+          </Button>
         </div>
 
-        <Button className="bg-blue-500 hover:bg-blue-600 text-white shadow-sm cursor-pointer w-full">
-          🔍 Iniciar scraping
-        </Button>
+        {/* Step 2: Scraper de Página */}
+        <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm flex flex-col">
+          <div className="flex items-center gap-2 mb-1">
+            <h2 className="text-base font-semibold text-gray-900">Scraper de Pagina de Facebook</h2>
+          </div>
+
+          <div className="mt-3 mb-5 flex-1 flex items-center">
+            {adsResults.length > 0 ? (
+              <div className="w-full rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3">
+                <p className="text-sm text-emerald-700 leading-relaxed">
+                  {adsResults.length} paginas listas para scrapear. Haz clic para obtener datos detallados.
+                </p>
+              </div>
+            ) : (
+              <div className="w-full rounded-xl border border-blue-200 bg-blue-50 px-4 py-3">
+                <p className="text-sm text-blue-700 leading-relaxed">
+                  Primero completa el scraping de la biblioteca de anuncios para obtener las paginas a procesar.
+                </p>
+              </div>
+            )}
+          </div>
+
+          <StatusBanner status={pagesStatus} />
+
+          <Button
+            onClick={handlePagesStart}
+            disabled={pagesLoading || pagesPolling || adsResults.length === 0}
+            className="bg-blue-500 hover:bg-blue-600 text-white shadow-sm cursor-pointer w-full disabled:opacity-50"
+          >
+            {pagesPolling ? 'Scrapeando...' : pagesLoading ? 'Iniciando...' : '🔍 Iniciar scraping'}
+          </Button>
+        </div>
       </div>
+
+      {/* Tabla de resultados de Ads */}
+      {adsResults.length > 0 && !pagesResults.length && <LeadsTable leads={adsResults} />}
+
+      {/* Tabla de resultados de Pages (reemplaza la de Ads) */}
+      {pagesResults.length > 0 && <LeadsTable leads={pagesResults} />}
     </motion.div>
   )
 }

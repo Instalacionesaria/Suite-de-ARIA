@@ -49,7 +49,7 @@ const fadeUp = {
   visible: (i: number) => ({
     opacity: 1,
     y: 0,
-    transition: { delay: i * 0.1, duration: 0.45, ease: [0.25, 0.46, 0.45, 0.94] },
+    transition: { delay: i * 0.1, duration: 0.45, ease: [0.25, 0.46, 0.45, 0.94] as const },
   }),
 }
 
@@ -139,14 +139,13 @@ export default function RecargaPage() {
               ))}
             </ul>
 
-            <Button
-              asChild
-              className={`w-full cursor-pointer transition-all duration-300 hover:scale-[1.03] active:scale-[0.97] ${plan.btnClass}`}
-            >
-              <a href={plan.url} target="_blank" rel="noopener noreferrer">
+            <a href={plan.url} target="_blank" rel="noopener noreferrer">
+              <Button
+                className={`w-full cursor-pointer transition-all duration-300 hover:scale-[1.03] active:scale-[0.97] ${plan.btnClass}`}
+              >
                 🚀 Seleccionar Plan
-              </a>
-            </Button>
+              </Button>
+            </a>
           </motion.div>
         ))}
       </div>

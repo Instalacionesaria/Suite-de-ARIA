@@ -10,7 +10,7 @@ const fadeUp = {
   visible: (i: number) => ({
     opacity: 1,
     y: 0,
-    transition: { delay: i * 0.12, duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] },
+    transition: { delay: i * 0.12, duration: 0.5, ease: [0.25, 0.46, 0.45, 0.94] as const },
   }),
 }
 
@@ -19,7 +19,7 @@ const scaleIn = {
   visible: {
     opacity: 1,
     scale: 1,
-    transition: { duration: 0.6, ease: [0.25, 0.46, 0.45, 0.94] },
+    transition: { duration: 0.6, ease: [0.25, 0.46, 0.45, 0.94] as const },
   },
 }
 
@@ -57,11 +57,42 @@ export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [code, setCode] = useState('')
   const [activeModule, setActiveModule] = useState(0)
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState('')
   const navigate = useNavigate()
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    navigate('/dashboard')
+    setIsLoading(true)
+    setError('')
+
+    try {
+      const res = await fetch('http://localhost:8000/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          correo_electronico: email.trim(),
+          codigo_de_acceso: code.trim(),
+        }),
+      })
+
+      const data = await res.json()
+
+      if (!res.ok) {
+        setError(data.detail || 'Error al iniciar sesión.')
+        return
+      }
+
+      // Guardar datos del usuario en localStorage
+      localStorage.setItem('aria_user', JSON.stringify(data.user))
+      localStorage.setItem('aria_user_email', data.user.correo_electronico)
+      localStorage.setItem('aria_user_id', data.user.id)
+      navigate('/dashboard')
+    } catch {
+      setError('No se pudo conectar al servidor. Verifica que el backend esté corriendo.')
+    } finally {
+      setIsLoading(false)
+    }
   }
 
   return (
@@ -145,13 +176,22 @@ export default function LoginPage() {
               </p>
             </motion.div>
 
+            {error && (
+              <motion.div variants={fadeUp} custom={3.5}>
+                <div className="px-4 py-3 rounded-xl bg-red-50 border border-red-200 text-sm text-red-700">
+                  {error}
+                </div>
+              </motion.div>
+            )}
+
             <motion.div variants={fadeUp} custom={4}>
               <Button
                 type="submit"
-                className="w-full h-11 relative overflow-hidden bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white font-semibold shadow-lg shadow-indigo-200/60 border-0 transition-all duration-300 hover:shadow-xl hover:shadow-indigo-300/40 hover:scale-[1.02] active:scale-[0.98] cursor-pointer"
+                disabled={isLoading}
+                className="w-full h-11 relative overflow-hidden bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white font-semibold shadow-lg shadow-indigo-200/60 border-0 transition-all duration-300 hover:shadow-xl hover:shadow-indigo-300/40 hover:scale-[1.02] active:scale-[0.98] cursor-pointer disabled:opacity-50 disabled:hover:scale-100"
               >
                 <span className="absolute inset-0 bg-gradient-to-r from-transparent via-white/20 to-transparent -translate-x-full animate-[btn-shimmer_2.5s_ease-in-out_infinite]" />
-                <span className="relative">🚀 Iniciar Sesión</span>
+                <span className="relative">{isLoading ? 'Verificando...' : '🚀 Iniciar Sesión'}</span>
               </Button>
             </motion.div>
           </form>

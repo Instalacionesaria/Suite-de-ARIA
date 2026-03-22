@@ -37,7 +37,7 @@ except ImportError:
     print("⚠️ facebook_pages_scraper no disponible aún")
 
 try:
-    from envio_de_correo import enviar_correo
+    from tools_scrapers.envio_de_correo import enviar_correo
 except ImportError:
     enviar_correo = None
     print("⚠️ envio_de_correo no disponible aún")
@@ -52,6 +52,11 @@ except ImportError:
 # =============================================
 # 1. MODELOS DE DATOS
 # =============================================
+
+# -- Login --
+class LoginRequest(BaseModel):
+    correo_electronico: str
+    codigo_de_acceso: str
 
 # -- Onboarding Chat --
 class MessageItem(BaseModel):
@@ -159,8 +164,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-SUPABASE_URL = "https://urxuebohedbjydwaedua.supabase.co"
-SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_KEY")
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 apify_token = os.getenv("APIFY_API_TOKEN")
 WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL")
 
@@ -330,6 +335,33 @@ async def root():
             "highlevel_mcp": "POST /highlevel-mcp",
             "job_status": "GET /job/{job_id}",
             "cancel_job": "POST /cancel-job/{job_id}",
+        },
+    }
+
+
+# --- Login ---
+@app.post("/login")
+async def login(request: LoginRequest):
+    headers = get_supabase_headers()
+    response = requests.get(
+        f"{SUPABASE_URL}/rest/v1/usuarios_scraper?correo_electronico=eq.{request.correo_electronico}&select=*",
+        headers=headers,
+    )
+    if not response.json():
+        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+
+    usuario = response.json()[0]
+    if usuario.get("codigo_de_acceso") != request.codigo_de_acceso:
+        raise HTTPException(status_code=401, detail="Código de acceso incorrecto.")
+
+    return {
+        "success": True,
+        "user": {
+            "id": usuario.get("id"),
+            "correo_electronico": usuario.get("correo_electronico"),
+            "nombre": usuario.get("nombre"),
+            "leads_disponibles_en_total": usuario.get("leads_disponibles_en_total", 0),
+            "numero_leads_scrapeados": usuario.get("numero_leads_scrapeados", 0),
         },
     }
 

@@ -118,7 +118,13 @@ export default function DashboardLayout() {
           </div>
 
           <button
-            onClick={() => navigate('/')}
+            onClick={() => {
+              localStorage.removeItem('aria_user')
+              localStorage.removeItem('aria_user_email')
+              localStorage.removeItem('aria_user_id')
+              localStorage.removeItem('aria_onboarding_data')
+              navigate('/')
+            }}
             className="w-full mt-2 flex items-center justify-center gap-2 px-3 py-2 rounded-lg border border-red-500/30 text-red-400 text-sm font-medium hover:bg-red-500/10 transition-all duration-200 cursor-pointer"
           >
             ← Cerrar Sesión
