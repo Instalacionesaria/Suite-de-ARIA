@@ -48,6 +48,12 @@ except ImportError:
     ejecutar_orden_highlevel = None
     print("⚠️ highlevel_mcp no disponible aún")
 
+try:
+    from tools_scrapers.envio_de_correo_LC_HighLevel import enviar_correo_masivo_lc
+except ImportError:
+    enviar_correo_masivo_lc = None
+    print("⚠️ envio_de_correo_LC_HighLevel no disponible aún")
+
 
 # =============================================
 # 1. MODELOS DE DATOS
@@ -66,6 +72,8 @@ class MessageItem(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     history: list[MessageItem] = []
+    model: Optional[str] = None
+    api_key: Optional[str] = None
 
 class ChatResponse(BaseModel):
     response: str
@@ -136,6 +144,21 @@ class EmailRequest(BaseModel):
     nombre_remitente: str
     destinatarios: List[str]
     mensaje: str
+
+# -- Envío de Correos via LeadConnector (HighLevel) --
+class EmailDestinatarioLC(BaseModel):
+    email: str
+    nombre: Optional[str] = ""
+    telefono: Optional[str] = ""
+    empresa: Optional[str] = ""
+
+class EmailLCRequest(BaseModel):
+    pit_token: str
+    location_id: str
+    asunto: str
+    mensaje: str
+    destinatarios: List[EmailDestinatarioLC]
+    email_from: Optional[str] = ""
 
 
 # =============================================
@@ -291,6 +314,42 @@ def increment_user_leads_count(user_id: str, leads_count: int) -> bool:
         return False
 
 
+def save_leads_to_table(user_id: str, job_id: str, source: str, leads: List[Dict[str, Any]]):
+    """Guarda los leads en la tabla aria_suite_leads_per_user."""
+    headers = get_supabase_headers(content_type=True)
+    rows = []
+    for lead in leads:
+        row = {
+            "user_id": user_id,
+            "job_id": job_id,
+            "source": source,
+            "name": lead.get("title") or lead.get("page_name") or lead.get("pageName") or lead.get("fullName") or "",
+            "email": lead.get("email") or "",
+            "phone": lead.get("phone") or lead.get("phoneUnformatted") or "",
+            "website": lead.get("website") or lead.get("companyWebsite") or "",
+            "location": lead.get("address") or lead.get("city") or "",
+            "category": lead.get("categoryName") or lead.get("industry") or "",
+            "raw_data": lead,
+        }
+        rows.append(row)
+
+    if not rows:
+        return
+
+    # Insertar en lotes de 50
+    for i in range(0, len(rows), 50):
+        batch = rows[i:i + 50]
+        response = requests.post(
+            f"{SUPABASE_URL}/rest/v1/aria_suite_leads_per_user",
+            headers=headers,
+            json=batch,
+        )
+        if response.status_code in [200, 201]:
+            print(f"Guardados {len(batch)} leads en aria_suite_leads_per_user (job {job_id})")
+        else:
+            print(f"Error guardando leads: {response.status_code} - {response.text}")
+
+
 def validate_user_and_leads(user_id: str = None, email: str = None) -> dict:
     """Valida que el usuario exista y tenga leads disponibles. Retorna datos del usuario."""
     headers = get_supabase_headers()
@@ -333,6 +392,7 @@ async def root():
             "facebook_ads": "POST /start-facebook-ads-scraping",
             "facebook_pages": "POST /start-facebook-pages-scraping",
             "send_email": "POST /send-email",
+            "send_email_highlevel": "POST /send-email-highlevel",
             "highlevel_mcp": "POST /highlevel-mcp",
             "job_status": "GET /job/{job_id}",
             "cancel_job": "POST /cancel-job/{job_id}",
@@ -384,11 +444,35 @@ async def get_user_leads(email: str):
     }
 
 
+# --- Mis Leads (tabla aria_suite_leads_per_user) ---
+@app.get("/mis-leads")
+async def get_mis_leads(email: str):
+    headers = get_supabase_headers()
+
+    # Obtener user_id
+    user_response = requests.get(
+        f"{SUPABASE_URL}/rest/v1/usuarios_scraper?correo_electronico=eq.{email}&select=id",
+        headers=headers,
+    )
+    if not user_response.json():
+        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+    user_id = user_response.json()[0]["id"]
+
+    # Obtener leads
+    leads_response = requests.get(
+        f"{SUPABASE_URL}/rest/v1/aria_suite_leads_per_user?user_id=eq.{user_id}&select=id,source,name,email,phone,website,location,category,created_at&order=created_at.desc",
+        headers=headers,
+    )
+    return leads_response.json()
+
+
 # --- Onboarding Chat (Agente IA) ---
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
+    if not req.api_key:
+        raise HTTPException(status_code=400, detail="Debes proporcionar tu API Key de OpenAI para usar el onboarding.")
     historial = [{"role": m.role, "content": m.content} for m in req.history]
-    resultado = chat_con_agente(req.message, historial)
+    resultado = chat_con_agente(req.message, historial, model=req.model, api_key=req.api_key)
     return ChatResponse(
         response=resultado["response"],
         extracted_data=resultado["extracted_data"],
@@ -500,6 +584,37 @@ async def send_email_endpoint(request: EmailRequest):
         "detalle_errores": errores,
         "message": f"Se enviaron {len(resultados)} correos correctamente." + (f" {len(errores)} fallaron." if errores else ""),
     }
+
+
+# --- Envío de Correos via LeadConnector (HighLevel) ---
+@app.post("/send-email-highlevel")
+async def send_email_highlevel_endpoint(request: EmailLCRequest):
+    if enviar_correo_masivo_lc is None:
+        raise HTTPException(status_code=501, detail="Módulo de envío via LeadConnector no disponible aún.")
+    if not request.pit_token.strip():
+        raise HTTPException(status_code=400, detail="El campo pit_token no puede estar vacío.")
+    if not request.location_id.strip():
+        raise HTTPException(status_code=400, detail="El campo location_id no puede estar vacío.")
+    if not request.destinatarios:
+        raise HTTPException(status_code=400, detail="La lista de destinatarios está vacía.")
+    if not request.mensaje.strip():
+        raise HTTPException(status_code=400, detail="El mensaje no puede estar vacío.")
+
+    destinatarios = [d.model_dump() for d in request.destinatarios]
+
+    resultado = enviar_correo_masivo_lc(
+        pit_token=request.pit_token,
+        location_id=request.location_id,
+        asunto=request.asunto,
+        mensaje_html=request.mensaje,
+        destinatarios=destinatarios,
+        email_from=request.email_from or "",
+    )
+
+    if resultado["enviados"] == 0 and resultado["fallidos"] > 0:
+        raise HTTPException(status_code=500, detail=resultado)
+
+    return resultado
 
 
 # --- Agente MCP de HighLevel ---
@@ -672,6 +787,7 @@ async def process_google_places_results(job_id: str, google_places_dataset_id: s
             user_id = job_details.get("user_id")
             if user_id:
                 increment_user_leads_count(user_id, len(final_leads))
+                save_leads_to_table(user_id, job_id, "maps", final_leads)
 
             print(f"Trabajo {job_id} completado (solo Google Places).")
             return
@@ -690,6 +806,7 @@ async def process_google_places_results(job_id: str, google_places_dataset_id: s
             user_id = job_details.get("user_id")
             if user_id:
                 increment_user_leads_count(user_id, len(final_leads))
+                save_leads_to_table(user_id, job_id, "maps", final_leads)
             return
 
         google_maps_scraper.start_website_crawler(
@@ -741,6 +858,7 @@ async def process_final_results(payload: WebsiteCrawlerWebhookPayload):
         user_id = job_details.get("user_id")
         if user_id:
             increment_user_leads_count(user_id, len(final_leads))
+            save_leads_to_table(user_id, job_id, "maps", final_leads)
 
         print(f"Trabajo {job_id} completado y resultados guardados exitosamente.")
 
@@ -761,6 +879,13 @@ async def handle_facebook_ads_webhook(payload: GooglePlacesWebhookPayload, backg
 
 async def process_facebook_ads_results(job_id: str, dataset_id: str):
     try:
+        headers = get_supabase_headers()
+        job_response = requests.get(
+            f"{SUPABASE_URL}/rest/v1/scraping_jobs?id=eq.{job_id}&select=user_id",
+            headers=headers,
+        )
+        user_id = job_response.json()[0].get("user_id") if job_response.json() else None
+
         client = ApifyClient(apify_token)
         dataset_items = client.dataset(dataset_id).list_items().items
 
@@ -773,6 +898,9 @@ async def process_facebook_ads_results(job_id: str, dataset_id: str):
 
         final_json_output = {"data": normalized_data, "results_count": len(normalized_data)}
         update_job_results(job_id, "COMPLETED", results=final_json_output)
+
+        if user_id:
+            save_leads_to_table(user_id, job_id, "facebook", normalized_data)
 
         print(f"Facebook Ads scraping {job_id} completado. {len(normalized_data)} anuncios extraídos.")
 
@@ -825,6 +953,7 @@ async def process_facebook_pages_results(job_id: str, dataset_id: str):
 
         if user_id:
             increment_user_leads_count(user_id, len(matched_results))
+            save_leads_to_table(user_id, job_id, "facebook", matched_results)
 
         print(f"Facebook Pages scraping {job_id} completado. {len(matched_results)} páginas extraídas.")
 

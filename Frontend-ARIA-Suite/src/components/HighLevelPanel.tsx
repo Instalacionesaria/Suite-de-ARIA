@@ -1,3 +1,4 @@
+import { useState, useEffect } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -11,6 +12,14 @@ const PENDING_LEADS = [
 const TOTAL_PENDING = PENDING_LEADS.reduce((s, l) => s + l.count, 0)
 
 export default function HighLevelPanel() {
+  const [pitToken, setPitToken] = useState(() => localStorage.getItem('aria_hl_pit_token') || '')
+  const [locationId, setLocationId] = useState(() => localStorage.getItem('aria_hl_location_id') || '')
+  const [etiqueta, setEtiqueta] = useState(() => localStorage.getItem('aria_hl_etiqueta') || '')
+
+  useEffect(() => { localStorage.setItem('aria_hl_pit_token', pitToken) }, [pitToken])
+  useEffect(() => { localStorage.setItem('aria_hl_location_id', locationId) }, [locationId])
+  useEffect(() => { localStorage.setItem('aria_hl_etiqueta', etiqueta) }, [etiqueta])
+
   return (
     <aside className="w-72 h-full shrink-0 bg-white border-l border-gray-200 p-5 overflow-y-auto flex flex-col gap-5">
       {/* Leads pending summary */}
@@ -48,6 +57,9 @@ export default function HighLevelPanel() {
         <Label className="text-sm font-semibold text-gray-900">API Token de High Level</Label>
         <p className="text-[11px] text-gray-500">Ingresa tu API token de High Level</p>
         <Input
+          type="password"
+          value={pitToken}
+          onChange={(e) => setPitToken(e.target.value)}
           placeholder="Ingresa tu API token de High Level"
           className="h-9 text-sm border-purple-200 focus-visible:ring-purple-500/30 focus-visible:border-purple-400"
         />
@@ -62,6 +74,8 @@ export default function HighLevelPanel() {
       <div className="space-y-1.5">
         <Label className="text-sm font-semibold text-gray-900">Location ID</Label>
         <Input
+          value={locationId}
+          onChange={(e) => setLocationId(e.target.value)}
           placeholder="Ingresa tu Location ID de High Level"
           className="h-9 text-sm border-purple-200 focus-visible:ring-purple-500/30 focus-visible:border-purple-400"
         />
@@ -76,6 +90,8 @@ export default function HighLevelPanel() {
       <div className="space-y-1.5">
         <Label className="text-sm font-semibold text-gray-900">Etiqueta para High Level</Label>
         <Input
+          value={etiqueta}
+          onChange={(e) => setEtiqueta(e.target.value)}
           placeholder="Ej: Leads Peluquerías Lima - Enero 2025"
           className="h-9 text-sm border-purple-200 focus-visible:ring-purple-500/30 focus-visible:border-purple-400"
         />

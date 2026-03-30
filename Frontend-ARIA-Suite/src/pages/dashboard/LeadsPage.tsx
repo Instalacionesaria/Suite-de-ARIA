@@ -1,4 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { API_URL } from '@/config'
 import { motion } from 'framer-motion'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -8,23 +10,14 @@ import { Checkbox } from '@/components/ui/checkbox'
 type LeadSource = 'all' | 'maps' | 'linkedin' | 'facebook'
 
 interface Lead {
-  id: number
+  id: string
   name: string
   email: string
   phone: string
   source: 'maps' | 'linkedin' | 'facebook'
   location: string
-  date: string
+  created_at: string
 }
-
-const DEMO_LEADS: Lead[] = [
-  { id: 1, name: 'Peluquería Glamour', email: 'contacto@glamour.com', phone: '+51 999 111 222', source: 'maps', location: 'Miraflores, Lima', date: '15 Mar 2026' },
-  { id: 2, name: 'Carlos Rodríguez', email: 'carlos@techcorp.io', phone: '+51 998 333 444', source: 'linkedin', location: 'San Isidro, Lima', date: '15 Mar 2026' },
-  { id: 3, name: 'Gym PowerFit', email: 'info@powerfit.pe', phone: '+51 997 555 666', source: 'facebook', location: 'Surco, Lima', date: '14 Mar 2026' },
-  { id: 4, name: 'Clínica Dental Sonrisa', email: 'admin@sonrisa.com', phone: '+51 996 777 888', source: 'maps', location: 'Barranco, Lima', date: '14 Mar 2026' },
-  { id: 5, name: 'Ana López - CEO', email: 'ana@startupxyz.com', phone: '+51 995 999 000', source: 'linkedin', location: 'Lima, Perú', date: '13 Mar 2026' },
-  { id: 6, name: 'Restaurante El Sabor', email: 'reservas@elsabor.pe', phone: '+51 994 111 333', source: 'facebook', location: 'Magdalena, Lima', date: '13 Mar 2026' },
-]
 
 const SOURCE_CONFIG = {
   maps: { label: 'Maps', icon: '🗺️', badgeClass: 'bg-blue-50 text-blue-600 border-blue-200' },
@@ -39,12 +32,50 @@ const FILTER_TABS: { key: LeadSource; label: string }[] = [
   { key: 'facebook', label: '📘 Facebook' },
 ]
 
+function formatDate(iso: string): string {
+  try {
+    return new Date(iso).toLocaleDateString('es-PE', { day: '2-digit', month: 'short', year: 'numeric' })
+  } catch {
+    return iso
+  }
+}
+
 export default function LeadsPage() {
+  const navigate = useNavigate()
   const [filter, setFilter] = useState<LeadSource>('all')
   const [search, setSearch] = useState('')
-  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [selected, setSelected] = useState<Set<string>>(new Set())
+  const [leads, setLeads] = useState<Lead[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  const filtered = DEMO_LEADS.filter((lead) => {
+  useEffect(() => {
+    const email = localStorage.getItem('aria_user_email')
+    if (!email) {
+      setLoading(false)
+      setError('Inicia sesión para ver tus leads.')
+      return
+    }
+
+    fetch(`${API_URL}/mis-leads?email=${encodeURIComponent(email)}`)
+      .then(async (res) => {
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}))
+          throw new Error(data.detail || 'Error al cargar leads.')
+        }
+        return res.json()
+      })
+      .then((data: Lead[]) => {
+        setLeads(data)
+        setLoading(false)
+      })
+      .catch((err) => {
+        setError(err.message)
+        setLoading(false)
+      })
+  }, [])
+
+  const filtered = leads.filter((lead) => {
     const matchesSource = filter === 'all' || lead.source === filter
     const matchesSearch =
       search === '' ||
@@ -53,7 +84,7 @@ export default function LeadsPage() {
     return matchesSource && matchesSearch
   })
 
-  const toggleSelect = (id: number) => {
+  const toggleSelect = (id: string) => {
     setSelected((prev) => {
       const next = new Set(prev)
       if (next.has(id)) next.delete(id)
@@ -89,7 +120,15 @@ export default function LeadsPage() {
             <Badge variant="secondary" className="text-sm">
               {selected.size} seleccionado{selected.size > 1 ? 's' : ''}
             </Badge>
-            <Button size="sm" className="bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer">
+            <Button
+              size="sm"
+              className="bg-indigo-600 hover:bg-indigo-700 text-white cursor-pointer"
+              onClick={() => {
+                const leadsParaOutreach = leads.filter((l) => selected.has(l.id))
+                localStorage.setItem('aria_outreach_leads', JSON.stringify(leadsParaOutreach))
+                navigate('/dashboard/outreach')
+              }}
+            >
               📨 Enviar a Outreach
             </Button>
           </motion.div>
@@ -123,63 +162,74 @@ export default function LeadsPage() {
 
       {/* Table */}
       <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-gray-100 bg-gray-50/50">
-              <th className="text-left p-3 w-10">
-                <Checkbox
-                  checked={selected.size === filtered.length && filtered.length > 0}
-                  onCheckedChange={toggleAll}
-                />
-              </th>
-              <th className="text-left p-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Nombre</th>
-              <th className="text-left p-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Email</th>
-              <th className="text-left p-3 text-xs font-semibold text-gray-500 uppercase tracking-wider hidden md:table-cell">Teléfono</th>
-              <th className="text-left p-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Fuente</th>
-              <th className="text-left p-3 text-xs font-semibold text-gray-500 uppercase tracking-wider hidden lg:table-cell">Ubicación</th>
-              <th className="text-left p-3 text-xs font-semibold text-gray-500 uppercase tracking-wider hidden lg:table-cell">Fecha</th>
-            </tr>
-          </thead>
-          <tbody>
-            {filtered.map((lead) => {
-              const src = SOURCE_CONFIG[lead.source]
-              return (
-                <motion.tr
-                  key={lead.id}
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className={`border-b border-gray-50 transition-colors duration-150 ${
-                    selected.has(lead.id) ? 'bg-indigo-50/50' : 'hover:bg-gray-50'
-                  }`}
-                >
-                  <td className="p-3">
-                    <Checkbox
-                      checked={selected.has(lead.id)}
-                      onCheckedChange={() => toggleSelect(lead.id)}
-                    />
-                  </td>
-                  <td className="p-3 font-medium text-gray-900">{lead.name}</td>
-                  <td className="p-3 text-gray-600">{lead.email}</td>
-                  <td className="p-3 text-gray-600 hidden md:table-cell">{lead.phone}</td>
-                  <td className="p-3">
-                    <Badge className={`${src.badgeClass} text-[10px]`}>
-                      {src.icon} {src.label}
-                    </Badge>
-                  </td>
-                  <td className="p-3 text-gray-500 hidden lg:table-cell">{lead.location}</td>
-                  <td className="p-3 text-gray-400 text-xs hidden lg:table-cell">{lead.date}</td>
-                </motion.tr>
-              )
-            })}
-            {filtered.length === 0 && (
-              <tr>
-                <td colSpan={7} className="p-12 text-center text-gray-400">
-                  No se encontraron leads con ese filtro.
-                </td>
+        {loading ? (
+          <div className="p-12 text-center text-gray-400">
+            <span className="w-5 h-5 border-2 border-gray-300 border-t-transparent rounded-full animate-spin inline-block mb-2" />
+            <p className="text-sm">Cargando leads...</p>
+          </div>
+        ) : error ? (
+          <div className="p-12 text-center text-red-500 text-sm">{error}</div>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-gray-100 bg-gray-50/50">
+                <th className="text-left p-3 w-10">
+                  <Checkbox
+                    checked={selected.size === filtered.length && filtered.length > 0}
+                    onCheckedChange={toggleAll}
+                  />
+                </th>
+                <th className="text-left p-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Nombre</th>
+                <th className="text-left p-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Email</th>
+                <th className="text-left p-3 text-xs font-semibold text-gray-500 uppercase tracking-wider hidden md:table-cell">Teléfono</th>
+                <th className="text-left p-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">Fuente</th>
+                <th className="text-left p-3 text-xs font-semibold text-gray-500 uppercase tracking-wider hidden lg:table-cell">Ubicación</th>
+                <th className="text-left p-3 text-xs font-semibold text-gray-500 uppercase tracking-wider hidden lg:table-cell">Fecha</th>
               </tr>
-            )}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {filtered.map((lead) => {
+                const src = SOURCE_CONFIG[lead.source] || SOURCE_CONFIG.maps
+                return (
+                  <motion.tr
+                    key={lead.id}
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className={`border-b border-gray-50 transition-colors duration-150 ${
+                      selected.has(lead.id) ? 'bg-indigo-50/50' : 'hover:bg-gray-50'
+                    }`}
+                  >
+                    <td className="p-3">
+                      <Checkbox
+                        checked={selected.has(lead.id)}
+                        onCheckedChange={() => toggleSelect(lead.id)}
+                      />
+                    </td>
+                    <td className="p-3 font-medium text-gray-900">{lead.name}</td>
+                    <td className="p-3 text-gray-600">{lead.email}</td>
+                    <td className="p-3 text-gray-600 hidden md:table-cell">{lead.phone}</td>
+                    <td className="p-3">
+                      <Badge className={`${src.badgeClass} text-[10px]`}>
+                        {src.icon} {src.label}
+                      </Badge>
+                    </td>
+                    <td className="p-3 text-gray-500 hidden lg:table-cell">{lead.location}</td>
+                    <td className="p-3 text-gray-400 text-xs hidden lg:table-cell">{formatDate(lead.created_at)}</td>
+                  </motion.tr>
+                )
+              })}
+              {filtered.length === 0 && (
+                <tr>
+                  <td colSpan={7} className="p-12 text-center text-gray-400">
+                    {leads.length === 0
+                      ? 'Aún no tienes leads. Ejecuta un scraper para comenzar.'
+                      : 'No se encontraron leads con ese filtro.'}
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        )}
       </div>
     </div>
   )

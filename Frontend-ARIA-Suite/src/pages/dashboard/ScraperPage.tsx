@@ -4,19 +4,19 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
-import { Checkbox } from '@/components/ui/checkbox'
 import { Badge } from '@/components/ui/badge'
 
 const SCRAPER_TABS = [
   { key: 'maps', label: 'Google Maps', icon: '🗺️', color: 'bg-blue-500' },
-  { key: 'linkedin', label: 'LinkedIn', icon: '💼', color: 'bg-sky-600' },
   { key: 'facebook', label: 'Facebook', icon: '📘', color: 'bg-indigo-600' },
+  { key: 'linkedin', label: 'LinkedIn', icon: '💼', color: 'bg-sky-600' },
 ] as const
 
 type ScraperTab = (typeof SCRAPER_TABS)[number]['key']
 
 export default function ScraperPage() {
   const [activeTab, setActiveTab] = useState<ScraperTab>('maps')
+  const hasOnboardingData = !!localStorage.getItem('aria_onboarding_data')
 
   return (
     <div className="p-6 lg:p-8 max-w-4xl">
@@ -27,6 +27,19 @@ export default function ScraperPage() {
           <span className="font-medium text-indigo-600">Mis Leads</span>.
         </p>
       </div>
+
+      {!hasOnboardingData && (
+        <div className="mb-5 flex items-start gap-3 px-4 py-3 bg-amber-50 border border-amber-200 rounded-xl">
+          <span className="text-amber-500 text-lg mt-0.5">⚠️</span>
+          <div>
+            <p className="text-sm font-medium text-amber-800">No completaste el Onboarding</p>
+            <p className="text-xs text-amber-600 mt-0.5">
+              Puedes usar los scrapers manualmente, pero el mensaje de <strong>Outreach</strong> no se generará
+              automáticamente. Ve a <strong>Onboarding</strong> para que el asistente IA configure todo por ti.
+            </p>
+          </div>
+        </div>
+      )}
 
       {/* Source tabs */}
       <div className="flex gap-2 mb-6">
@@ -85,7 +98,6 @@ interface Lead {
 }
 
 function MapsForm() {
-  const [enrichPremium, setEnrichPremium] = useState(false)
   const [businessType, setBusinessType] = useState('')
   const [location, setLocation] = useState('')
   const [isLoading, setIsLoading] = useState(false)
@@ -165,7 +177,7 @@ function MapsForm() {
         body: JSON.stringify({
           businessType: businessType.trim(),
           location: location.trim(),
-          getEmails: enrichPremium,
+          getEmails: true,
           getBusinessModel: false,
           timestamp: new Date().toISOString(),
           userId: localStorage.getItem('aria_user_id') || '',
@@ -209,16 +221,6 @@ function MapsForm() {
           </div>
         </div>
 
-        <div className="flex items-center gap-2 mb-5">
-          <Checkbox
-            id="enrich"
-            checked={enrichPremium}
-            onCheckedChange={(v) => setEnrichPremium(v === true)}
-          />
-          <Label htmlFor="enrich" className="text-sm text-gray-600 cursor-pointer">
-            Enriquecer con Datos Premium (Ejm: Emails, Perfil LinkedIn, etc)
-          </Label>
-        </div>
 
         {status && (
           <div className={`mb-4 px-4 py-3 rounded-xl text-sm flex items-center gap-2 ${
