@@ -40,6 +40,28 @@ function formatDate(iso: string): string {
   }
 }
 
+function downloadCSV(leads: Lead[]) {
+  if (leads.length === 0) return
+  const headers = ['Nombre', 'Email', 'Teléfono', 'Fuente', 'Ubicación', 'Fecha']
+  const escape = (v: string) => `"${(v || '').replace(/"/g, '""')}"`
+  const rows = leads.map((l) => [
+    escape(l.name),
+    escape(l.email),
+    escape(l.phone),
+    escape(l.source),
+    escape(l.location),
+    escape(formatDate(l.created_at)),
+  ].join(','))
+  const csv = [headers.join(','), ...rows].join('\n')
+  const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `leads_aria_${new Date().toISOString().slice(0, 10)}.csv`
+  a.click()
+  URL.revokeObjectURL(url)
+}
+
 export default function LeadsPage() {
   const navigate = useNavigate()
   const [filter, setFilter] = useState<LeadSource>('all')
@@ -158,6 +180,15 @@ export default function LeadsPage() {
           onChange={(e) => setSearch(e.target.value)}
           className="h-8 text-sm max-w-xs"
         />
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={filtered.length === 0}
+          onClick={() => downloadCSV(filtered)}
+          className="h-8 text-xs cursor-pointer gap-1.5 ml-auto"
+        >
+          CSV
+        </Button>
       </div>
 
       {/* Table */}
