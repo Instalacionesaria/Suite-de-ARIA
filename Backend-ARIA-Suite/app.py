@@ -137,6 +137,16 @@ class HighLevelMCPRequest(BaseModel):
     location_id: str
     orden: str
 
+# -- Funnel Scrape (n8n → ARIA Suite) --
+class FunnelScrapeRequest(BaseModel):
+    niche: str
+    location: str
+    email: str
+    name: Optional[str] = ""
+    phone: Optional[str] = ""
+    profession: Optional[str] = ""
+    clientType: Optional[str] = ""
+
 # -- Envío de Correos --
 class EmailRequest(BaseModel):
     gmail_user: str
@@ -394,6 +404,7 @@ async def root():
             "send_email": "POST /send-email",
             "send_email_highlevel": "POST /send-email-highlevel",
             "highlevel_mcp": "POST /highlevel-mcp",
+            "funnel_scrape": "POST /funnel-scrape",
             "job_status": "GET /job/{job_id}",
             "cancel_job": "POST /cancel-job/{job_id}",
         },
@@ -499,6 +510,68 @@ async def start_scraping_job(request: ScrapingRequest):
         raise HTTPException(status_code=502, detail=f"Error al iniciar el actor de Apify: {e}")
 
     return {"status": "success", "message": "Tu búsqueda ha comenzado.", "jobId": job_id}
+
+
+# --- Funnel Scrape (n8n → ARIA Suite) ---
+@app.post("/funnel-scrape")
+async def funnel_scrape(request: FunnelScrapeRequest):
+    """
+    Endpoint llamado por n8n cuando un lead llena el funnel de ventas.
+    El usuario ya debe existir en Supabase (creado previamente por n8n).
+    Solo lanza el scraping de Google Maps con niche + location.
+    """
+    headers = get_supabase_headers(content_type=True, prefer_return=True)
+
+    # 1. Buscar usuario por email (ya creado por n8n)
+    search_response = requests.get(
+        f"{SUPABASE_URL}/rest/v1/usuarios_scraper?correo_electronico=eq.{request.email}&select=*",
+        headers=get_supabase_headers(),
+    )
+    if not search_response.json():
+        raise HTTPException(status_code=404, detail=f"Usuario {request.email} no encontrado. Debe ser creado en n8n antes de llamar a este endpoint.")
+    usuario = search_response.json()[0]
+
+    # 2. Crear scraping job (sin validar leads disponibles — el funnel siempre scrapea)
+    job_data = {
+        "user_id": usuario["id"],
+        "status": "PENDING",
+        "business_type": request.niche,
+        "location": request.location,
+        "get_emails": True,
+        "get_business_model": False,
+    }
+    job_response = requests.post(
+        f"{SUPABASE_URL}/rest/v1/scraping_jobs",
+        headers=headers,
+        json=job_data,
+    )
+    if job_response.status_code not in [200, 201]:
+        raise HTTPException(status_code=500, detail="No se pudo registrar el trabajo de scraping.")
+    job_id = job_response.json()[0]["id"]
+
+    # 5. Lanzar scraping en Apify (reutiliza el mismo scraper de Maps)
+    try:
+        run_id = google_maps_scraper.start_google_maps_scrape(
+            business_type=request.niche,
+            location=request.location,
+            get_emails=True,
+            webhook_base_url=WEBHOOK_BASE_URL,
+            job_id=job_id,
+        )
+        update_job_run_id(job_id, run_id)
+    except Exception as e:
+        update_job_results(job_id, "FAILED", error_message=str(e))
+        raise HTTPException(status_code=502, detail=f"Error al iniciar Apify: {e}")
+
+    print(f"[Funnel] Scraping iniciado para {request.email}: '{request.niche}' en '{request.location}' (job: {job_id})")
+
+    return {
+        "status": "success",
+        "message": f"Scraping iniciado para '{request.niche}' en '{request.location}'.",
+        "jobId": job_id,
+        "userId": usuario["id"],
+        "email": request.email,
+    }
 
 
 # --- Job Status ---
