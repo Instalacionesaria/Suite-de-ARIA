@@ -471,7 +471,7 @@ async def get_mis_leads(email: str):
 
     # Obtener leads
     leads_response = requests.get(
-        f"{SUPABASE_URL}/rest/v1/aria_suite_leads_per_user?user_id=eq.{user_id}&select=id,source,name,email,phone,website,location,category,created_at&order=created_at.desc",
+        f"{SUPABASE_URL}/rest/v1/aria_suite_leads_per_user?user_id=eq.{user_id}&select=id,source,name,email,phone,website,location,category,raw_data,created_at&order=created_at.desc",
         headers=headers,
     )
     return leads_response.json()

@@ -16,6 +16,9 @@ interface Lead {
   phone: string
   source: 'maps' | 'linkedin' | 'facebook'
   location: string
+  category?: string
+  website?: string
+  raw_data?: Record<string, unknown>
   created_at: string
 }
 
@@ -187,7 +190,7 @@ export default function LeadsPage() {
           onClick={() => downloadCSV(filtered)}
           className="h-8 text-xs cursor-pointer gap-1.5 ml-auto"
         >
-          CSV
+          Descargar CSV
         </Button>
       </div>
 
