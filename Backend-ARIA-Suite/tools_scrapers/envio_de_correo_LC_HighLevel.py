@@ -139,6 +139,7 @@ def enviar_email_lc(
         body["emailFrom"] = email_from
 
     try:
+        print(f"[HighLevel Email] Enviando body: {body}")
         response = requests.post(
             f"{LC_BASE_URL}/conversations/messages",
             headers=headers,
@@ -147,6 +148,8 @@ def enviar_email_lc(
         if response.status_code in [200, 201]:
             return {"success": True, "message": "Email enviado correctamente."}
         else:
+            print(f"[HighLevel Email] Error {response.status_code}: {response.text}")
+            print(f"[HighLevel Email] Response headers: {dict(response.headers)}")
             error_detail = response.text
             try:
                 error_detail = response.json().get("message", response.text)
