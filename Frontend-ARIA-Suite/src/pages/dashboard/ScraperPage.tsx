@@ -166,6 +166,16 @@ function MapsForm() {
       return
     }
 
+    // Validar mínimo 3 partes en la localización (ej: distrito, ciudad, país)
+    const locationParts = location.split(',').map((p) => p.trim()).filter(Boolean)
+    if (locationParts.length < 3) {
+      setStatus({
+        type: 'error',
+        message: 'La localización debe tener al menos 3 partes separadas por coma. Ej: "Cayma, Arequipa, Perú" (distrito, ciudad, país). Esto evita que el scraper consuma demasiados leads de zonas amplias.',
+      })
+      return
+    }
+
     setIsLoading(true)
     setStatus(null)
     setResults([])
@@ -218,6 +228,9 @@ function MapsForm() {
           <div className="space-y-1.5">
             <Label htmlFor="location" className="text-sm text-gray-600">Localización</Label>
             <Input id="location" placeholder="Ej: Cayma, Arequipa, Perú" className="h-10" value={location} onChange={(e) => setLocation(e.target.value)} />
+            <p className="text-[11px] text-amber-600">
+              ⚠️ Mínimo 3 partes separadas por coma (ej: distrito, ciudad, país). Evita zonas demasiado amplias.
+            </p>
           </div>
         </div>
 
@@ -340,39 +353,178 @@ function LeadsTable({ leads }: { leads: Lead[] }) {
 }
 
 function LinkedInForm() {
+  const [jobTitle, setJobTitle] = useState('')
+  const [country, setCountry] = useState('')
+  const [state, setState] = useState('')
+  const [numberOfLeads, setNumberOfLeads] = useState(100)
+  const [isLoading, setIsLoading] = useState(false)
+  const [isPolling, setIsPolling] = useState(false)
+  const [status, setStatus] = useState<{ type: 'success' | 'error' | 'polling'; message: string } | null>(null)
+  const [results, setResults] = useState<Lead[]>([])
+
+  const pollJobStatus = async (jobId: string) => {
+    setIsPolling(true)
+    setStatus({ type: 'polling', message: 'Scrapeando leads de LinkedIn... Esto puede tomar varios minutos.' })
+
+    const poll = async () => {
+      try {
+        const res = await fetch(`${API_URL}/job/${jobId}`)
+        const data = await res.json()
+
+        if (data.status === 'COMPLETED') {
+          setIsPolling(false)
+          setIsLoading(false)
+          const leads = data.results?.data || []
+          setResults(leads)
+          setStatus({ type: 'success', message: `Scraping completado. ${leads.length} leads encontrados.` })
+          return
+        }
+        if (data.status === 'FAILED' || data.status === 'CANCELLED') {
+          setIsPolling(false)
+          setIsLoading(false)
+          setStatus({ type: 'error', message: `El scraping ${data.status === 'FAILED' ? 'falló' : 'fue cancelado'}.` })
+          return
+        }
+        setTimeout(poll, 5000)
+      } catch {
+        setIsPolling(false)
+        setIsLoading(false)
+        setStatus({ type: 'error', message: 'Error al consultar el estado del scraping.' })
+      }
+    }
+    poll()
+  }
+
+  const handleStartScraping = async () => {
+    if (!jobTitle.trim() || !country.trim()) {
+      setStatus({ type: 'error', message: 'Job Title y País son obligatorios.' })
+      return
+    }
+    if (numberOfLeads < 100 || numberOfLeads > 30000) {
+      setStatus({ type: 'error', message: 'Number of Leads debe estar entre 100 y 30000.' })
+      return
+    }
+
+    setIsLoading(true)
+    setStatus(null)
+    setResults([])
+
+    try {
+      const res = await fetch(`${API_URL}/start-linkedin-scraping`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          job_title: jobTitle.trim(),
+          country: country.trim(),
+          state: state.trim(),
+          number_of_leads: numberOfLeads,
+          userId: localStorage.getItem('aria_user_id') || '',
+          correo_electronico: localStorage.getItem('aria_user_email') || '',
+          timestamp: new Date().toISOString(),
+        }),
+      })
+      const data = await res.json()
+      if (!res.ok) {
+        setStatus({ type: 'error', message: data.detail || 'Error al iniciar el scraping.' })
+        setIsLoading(false)
+        return
+      }
+      pollJobStatus(data.jobId)
+    } catch {
+      setStatus({ type: 'error', message: 'No se pudo conectar al servidor.' })
+      setIsLoading(false)
+    }
+  }
+
   return (
-    <motion.div {...formAnimation} className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
-      <div className="flex items-center gap-2 mb-5">
-        <span className="text-xl">💼</span>
-        <h2 className="text-lg font-semibold text-gray-900">LinkedIn</h2>
-        <Badge className="bg-sky-50 text-sky-600 border-sky-200 text-[10px]">Scraper</Badge>
+    <motion.div {...formAnimation} className="space-y-5">
+      <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
+        <div className="flex items-center gap-2 mb-5">
+          <span className="text-xl">💼</span>
+          <h2 className="text-lg font-semibold text-gray-900">LinkedIn (vía Apollo)</h2>
+          <Badge className="bg-sky-50 text-sky-600 border-sky-200 text-[10px]">Scraper</Badge>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="li-job-title" className="text-sm text-gray-600">Job Title</Label>
+            <Input
+              id="li-job-title"
+              placeholder="Ej: Real Estate Agent, CEO, Marketing Manager"
+              className="h-10"
+              value={jobTitle}
+              onChange={(e) => setJobTitle(e.target.value)}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="li-country" className="text-sm text-gray-600">Country</Label>
+            <Input
+              id="li-country"
+              placeholder="Ej: United States, Peru, Mexico"
+              className="h-10"
+              value={country}
+              onChange={(e) => setCountry(e.target.value)}
+            />
+            <p className="text-[11px] text-amber-600">
+              ⚠️ Es preferible escribir el nombre del país en inglés para evitar errores en la búsqueda.
+            </p>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
+          <div className="space-y-1.5">
+            <Label htmlFor="li-state" className="text-sm text-gray-600">State / Región (opcional)</Label>
+            <Input
+              id="li-state"
+              placeholder="Ej: California, Lima, Ucayali, Madre de Dios"
+              className="h-10"
+              value={state}
+              onChange={(e) => setState(e.target.value)}
+            />
+            <p className="text-[11px] text-gray-400">
+              El estado puede ir en español si no tiene traducción común al inglés.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="li-number" className="text-sm text-gray-600">Number of Leads (100 - 30000)</Label>
+            <Input
+              id="li-number"
+              type="number"
+              min={100}
+              max={30000}
+              step={100}
+              className="h-10"
+              value={numberOfLeads}
+              onChange={(e) => setNumberOfLeads(Number(e.target.value))}
+            />
+          </div>
+        </div>
+
+        {status && (
+          <div className={`mb-4 px-4 py-3 rounded-xl text-sm flex items-center gap-2 ${
+            status.type === 'success'
+              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+              : status.type === 'polling'
+                ? 'bg-blue-50 text-blue-700 border border-blue-200'
+                : 'bg-red-50 text-red-700 border border-red-200'
+          }`}>
+            {status.type === 'polling' && (
+              <span className="w-4 h-4 border-2 border-blue-500 border-t-transparent rounded-full animate-spin shrink-0" />
+            )}
+            {status.message}
+          </div>
+        )}
+
+        <Button
+          onClick={handleStartScraping}
+          disabled={isLoading || isPolling}
+          className="bg-sky-600 hover:bg-sky-700 text-white shadow-sm cursor-pointer disabled:opacity-50"
+        >
+          {isPolling ? 'Scrapeando...' : isLoading ? 'Iniciando...' : '💼 Scrape Leads'}
+        </Button>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
-        <div className="space-y-1.5">
-          <Label htmlFor="li-keyword" className="text-sm text-gray-600">Palabra clave / Cargo</Label>
-          <Input id="li-keyword" placeholder="Ej: CEO, Marketing Manager" className="h-10" />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="li-location" className="text-sm text-gray-600">Ubicación</Label>
-          <Input id="li-location" placeholder="Ej: Lima, Perú" className="h-10" />
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-5">
-        <div className="space-y-1.5">
-          <Label htmlFor="li-industry" className="text-sm text-gray-600">Industria</Label>
-          <Input id="li-industry" placeholder="Ej: Tecnología" className="h-10" />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="li-company" className="text-sm text-gray-600">Empresa (opcional)</Label>
-          <Input id="li-company" placeholder="Ej: Google, Meta" className="h-10" />
-        </div>
-      </div>
-
-      <Button className="bg-sky-600 hover:bg-sky-700 text-white shadow-sm cursor-pointer">
-        💼 Buscar en LinkedIn
-      </Button>
+      {results.length > 0 && <LeadsTable leads={results} />}
     </motion.div>
   )
 }

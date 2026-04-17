@@ -37,6 +37,12 @@ except ImportError:
     print("⚠️ facebook_pages_scraper no disponible aún")
 
 try:
+    from tools_scrapers import linkedin_apollo_scraper
+except ImportError:
+    linkedin_apollo_scraper = None
+    print("⚠️ linkedin_apollo_scraper no disponible aún")
+
+try:
     from tools_scrapers.envio_de_correo import enviar_correo
 except ImportError:
     enviar_correo = None
@@ -130,6 +136,16 @@ class FacebookPagesScrapingRequest(BaseModel):
 
     def get_original_pages_data(self) -> List[Dict[str, str]]:
         return [page.model_dump() for page in self.pages]
+
+# -- LinkedIn (Apollo) Scraping --
+class LinkedInScrapingRequest(BaseModel):
+    job_title: str
+    country: str
+    state: Optional[str] = ""
+    number_of_leads: int = 100
+    userId: Optional[str] = None
+    correo_electronico: str
+    timestamp: Optional[str] = None
 
 # -- HighLevel MCP --
 class HighLevelMCPRequest(BaseModel):
@@ -401,6 +417,7 @@ async def root():
             "google_places": "POST /start-scraping",
             "facebook_ads": "POST /start-facebook-ads-scraping",
             "facebook_pages": "POST /start-facebook-pages-scraping",
+            "linkedin_apollo": "POST /start-linkedin-scraping",
             "send_email": "POST /send-email",
             "send_email_highlevel": "POST /send-email-highlevel",
             "highlevel_mcp": "POST /highlevel-mcp",
@@ -493,6 +510,15 @@ def chat(req: ChatRequest):
 # --- Google Places Scraping ---
 @app.post("/start-scraping")
 async def start_scraping_job(request: ScrapingRequest):
+    # Validar que la localización tenga al menos 3 partes separadas por coma
+    # (ej: "Cayma, Arequipa, Perú" = distrito/zona, ciudad/provincia, país)
+    location_parts = [p.strip() for p in request.location.split(",") if p.strip()]
+    if len(location_parts) < 3:
+        raise HTTPException(
+            status_code=400,
+            detail="La localización debe tener al menos 3 partes separadas por coma. Ej: 'Cayma, Arequipa, Perú' (distrito, ciudad, país).",
+        )
+
     usuario = validate_user_and_leads(email=request.correo_electronico)
     job_id = create_scraping_job(usuario.get("id"), request)
 
@@ -825,6 +851,58 @@ async def start_facebook_pages_scraping(request: FacebookPagesScrapingRequest):
         raise HTTPException(status_code=500, detail=f"Error al iniciar el scraping: {str(e)}")
 
 
+# --- LinkedIn (Apollo) Scraping ---
+@app.post("/start-linkedin-scraping")
+async def start_linkedin_scraping(request: LinkedInScrapingRequest):
+    if linkedin_apollo_scraper is None:
+        raise HTTPException(status_code=501, detail="Módulo linkedin_apollo_scraper no disponible aún.")
+
+    if not request.job_title.strip():
+        raise HTTPException(status_code=400, detail="job_title es obligatorio.")
+    if not request.country.strip():
+        raise HTTPException(status_code=400, detail="country es obligatorio.")
+    if request.number_of_leads < 100 or request.number_of_leads > 30000:
+        raise HTTPException(status_code=400, detail="number_of_leads debe estar entre 100 y 30000.")
+
+    usuario = validate_user_and_leads(user_id=request.userId, email=request.correo_electronico)
+    user_id = usuario.get("id")
+
+    headers = get_supabase_headers(content_type=True, prefer_return=True)
+    location_str = f"{request.state}, {request.country}".strip(", ") if request.state else request.country
+    job_data = {
+        "user_id": user_id,
+        "status": "PENDING",
+        "business_type": f"LinkedIn: {request.job_title}",
+        "location": location_str,
+        "get_emails": True,
+        "get_business_model": False,
+    }
+    job_response = requests.post(f"{SUPABASE_URL}/rest/v1/scraping_jobs", headers=headers, json=job_data)
+    if job_response.status_code not in [200, 201]:
+        raise HTTPException(status_code=500, detail="No se pudo registrar el trabajo de LinkedIn.")
+    job_id = job_response.json()[0]["id"]
+
+    try:
+        run_id = linkedin_apollo_scraper.start_linkedin_scrape(
+            job_title=request.job_title,
+            country=request.country,
+            state=request.state or "",
+            number_of_leads=request.number_of_leads,
+            webhook_base_url=WEBHOOK_BASE_URL,
+            job_id=job_id,
+        )
+        update_job_run_id(job_id, run_id)
+    except Exception as e:
+        update_job_results(job_id, "FAILED", error_message=str(e))
+        raise HTTPException(status_code=502, detail=f"Error al iniciar Apify (LinkedIn): {e}")
+
+    return {
+        "status": "success",
+        "message": f"Scraping de LinkedIn iniciado: {request.job_title} en {location_str}.",
+        "jobId": job_id,
+    }
+
+
 # =============================================
 # 5. WEBHOOKS Y TAREAS EN SEGUNDO PLANO
 # =============================================
@@ -1032,4 +1110,42 @@ async def process_facebook_pages_results(job_id: str, dataset_id: str):
 
     except Exception as e:
         print(f"Error procesando resultados de Facebook Pages para job {job_id}: {e}")
+        update_job_results(job_id, "FAILED", error_message=str(e))
+
+
+# --- LinkedIn (Apollo) Webhook ---
+@app.post("/webhook-linkedin-apollo-succeeded")
+async def handle_linkedin_apollo_webhook(payload: GooglePlacesWebhookPayload, background_tasks: BackgroundTasks):
+    job_id = payload.job_id
+    dataset_id = payload.resource.defaultDatasetId
+    print(f"Webhook: LinkedIn (Apollo) terminó para Job ID: {job_id}")
+    background_tasks.add_task(process_linkedin_apollo_results, job_id, dataset_id)
+    return {"status": "webhook received"}
+
+
+async def process_linkedin_apollo_results(job_id: str, dataset_id: str):
+    try:
+        headers = get_supabase_headers()
+        job_response = requests.get(
+            f"{SUPABASE_URL}/rest/v1/scraping_jobs?id=eq.{job_id}&select=user_id",
+            headers=headers,
+        )
+        if not job_response.json():
+            raise Exception("Job no encontrado")
+
+        user_id = job_response.json()[0].get("user_id")
+
+        items = linkedin_apollo_scraper.get_dataset_items(dataset_id)
+        final_leads = linkedin_apollo_scraper.build_final_leads(items)
+        final_json_output = {"data": final_leads, "results_count": len(final_leads)}
+        update_job_results(job_id, "COMPLETED", results=final_json_output)
+
+        if user_id:
+            increment_user_leads_count(user_id, len(final_leads))
+            save_leads_to_table(user_id, job_id, "linkedin", final_leads)
+
+        print(f"LinkedIn (Apollo) {job_id} completado. {len(final_leads)} leads guardados.")
+
+    except Exception as e:
+        print(f"Error procesando resultados de LinkedIn para job {job_id}: {e}")
         update_job_results(job_id, "FAILED", error_message=str(e))

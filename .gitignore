@@ -33,3 +33,6 @@ venv/
 *.njsproj
 *.sln
 *.sw?
+
+# Proyecto legacy excluido del repo
+Proyecto-Software-Scraper-ANTIGUO/
