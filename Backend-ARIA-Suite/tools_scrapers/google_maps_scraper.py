@@ -88,7 +88,7 @@ def start_google_maps_scrape(
 
     print(f"[Maps] Job {job_id}: hasta {max_places} lugares, tope ${max_total_charge} USD, emails={'sí' if get_emails else 'no'}")
 
-    return run["id"]
+    return run["id"] if isinstance(run, dict) else run.id
 
 
 def start_website_crawler(
@@ -122,7 +122,7 @@ def start_website_crawler(
         }],
     )
 
-    return run["id"]
+    return run["id"] if isinstance(run, dict) else run.id
 
 
 def get_dataset_items(dataset_id: str) -> List[Dict[str, Any]]:

@@ -8,7 +8,7 @@ python-dotenv==1.2.2
 requests>=2.31.0
 
 # Apify (scraping)
-apify-client>=1.6.0
+apify-client==2.5.0
 
 # LangChain + OpenAI (agente de onboarding + HighLevel MCP)
 langchain==1.2.12

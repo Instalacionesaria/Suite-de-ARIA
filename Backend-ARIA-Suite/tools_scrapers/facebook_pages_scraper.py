@@ -53,7 +53,7 @@ def start_facebook_page_scrape(page_urls: List[str], webhook_base_url: str, job_
         ],
     )
 
-    return run["id"]
+    return run["id"] if isinstance(run, dict) else run.id
 
 
 def build_facebook_pages_table_items(dataset_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

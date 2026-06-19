@@ -48,7 +48,7 @@ def start_facebook_ads_scrape(scrape_url: str, webhook_base_url: str, job_id: st
         ],
     )
 
-    return run["id"]
+    return run["id"] if isinstance(run, dict) else run.id
 
 
 def build_facebook_ads_table_items(dataset_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

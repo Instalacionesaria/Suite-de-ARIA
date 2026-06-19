@@ -52,7 +52,7 @@ def start_linkedin_scrape(
         }],
     )
 
-    return run["id"]
+    return run["id"] if isinstance(run, dict) else run.id
 
 
 def get_dataset_items(dataset_id: str) -> List[Dict[str, Any]]:
