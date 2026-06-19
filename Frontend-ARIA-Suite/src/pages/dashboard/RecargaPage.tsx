@@ -2,16 +2,57 @@ import { motion } from 'framer-motion'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 
-const STATS = [
-  { icon: '👥', value: '50,000+', label: 'Leads generados', gradient: 'from-blue-500 to-cyan-400' },
-  { icon: '⭐', value: '98%', label: 'Precisión de datos', gradient: 'from-amber-500 to-yellow-400' },
-  { icon: '⚡', value: '24/7', label: 'Escrapeo a toda hora', gradient: 'from-indigo-500 to-purple-400' },
-]
-
 const PLANS = [
+  // --- Recargas rápidas (precio $0.015/lead) ---
+  // TODO: reemplazar url:'' por el link de pago real de cada recarga.
+  {
+    name: 'Recarga 500',
+    price: '7.50',
+    leads: '500',
+    popular: false,
+    features: ['Scraping de Google Maps', 'Leads con teléfono y email', 'Exportación CSV'],
+    gradient: 'from-emerald-500 to-teal-500',
+    btnClass: 'bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-600 hover:to-teal-600 text-white',
+    ringClass: 'border-gray-200 hover:border-emerald-300',
+    url: '',
+  },
+  {
+    name: 'Recarga 1,000',
+    price: '15',
+    leads: '1,000',
+    popular: false,
+    features: ['Scraping de Google Maps', 'Leads con teléfono y email', 'Exportación CSV'],
+    gradient: 'from-cyan-500 to-blue-500',
+    btnClass: 'bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600 text-white',
+    ringClass: 'border-gray-200 hover:border-cyan-300',
+    url: '',
+  },
+  {
+    name: 'Recarga 1,500',
+    price: '22.50',
+    leads: '1,500',
+    popular: false,
+    features: ['Scraping de Google Maps', 'Leads con teléfono y email', 'Exportación CSV'],
+    gradient: 'from-violet-500 to-purple-500',
+    btnClass: 'bg-gradient-to-r from-violet-500 to-purple-500 hover:from-violet-600 hover:to-purple-600 text-white',
+    ringClass: 'border-gray-200 hover:border-violet-300',
+    url: '',
+  },
+  {
+    name: 'Recarga 2,000',
+    price: '30',
+    leads: '2,000',
+    popular: false,
+    features: ['Scraping de Google Maps', 'Leads con teléfono y email', 'Exportación CSV'],
+    gradient: 'from-amber-500 to-orange-500',
+    btnClass: 'bg-gradient-to-r from-amber-500 to-orange-500 hover:from-amber-600 hover:to-orange-600 text-white',
+    ringClass: 'border-gray-200 hover:border-amber-300',
+    url: '',
+  },
+  // --- Planes ---
   {
     name: 'Básico',
-    price: 30,
+    price: '37.50',
     leads: '2,500',
     popular: false,
     features: ['Scraping de Google Maps', 'Exportación CSV', 'Soporte por email'],
@@ -22,7 +63,7 @@ const PLANS = [
   },
   {
     name: 'Profesional',
-    price: 60,
+    price: '75',
     leads: '5,000',
     popular: true,
     features: ['Todo del Básico', 'Scraping LinkedIn & Facebook', 'Datos Premium', 'Envío de correos y WhatsApp'],
@@ -33,7 +74,7 @@ const PLANS = [
   },
   {
     name: 'Empresarial',
-    price: 90,
+    price: '150',
     leads: '10,000',
     popular: false,
     features: ['Todo del Profesional', 'API access ilimitado', 'Soporte prioritario', 'Cuentas múltiples'],
@@ -56,7 +97,7 @@ const fadeUp = {
 export default function RecargaPage() {
   return (
     <motion.div
-      className="p-6 lg:p-8 max-w-3xl mx-auto"
+      className="p-6 lg:p-8 max-w-6xl mx-auto"
       initial="hidden"
       animate="visible"
     >
@@ -74,28 +115,8 @@ export default function RecargaPage() {
         </p>
       </motion.div>
 
-      {/* Stats */}
-      <motion.div variants={fadeUp} custom={1} className="grid grid-cols-3 gap-4 mb-10">
-        {STATS.map((stat) => (
-          <motion.div
-            key={stat.label}
-            whileHover={{ y: -4, scale: 1.02 }}
-            transition={{ type: 'spring', stiffness: 400, damping: 20 }}
-            className="bg-white rounded-xl border border-gray-100 px-4 py-4 flex items-center gap-3 shadow-sm hover:shadow-md cursor-default group"
-          >
-            <span className={`text-xl shrink-0 w-10 h-10 flex items-center justify-center rounded-xl bg-gradient-to-br ${stat.gradient} text-white shadow-sm`}>
-              {stat.icon}
-            </span>
-            <div>
-              <p className="text-lg font-bold text-gray-900 leading-tight">{stat.value}</p>
-              <p className="text-[11px] text-gray-500">{stat.label}</p>
-            </div>
-          </motion.div>
-        ))}
-      </motion.div>
-
       {/* Plans */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-5 items-start">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 items-start">
         {PLANS.map((plan, i) => (
           <motion.div
             key={plan.name}
@@ -139,13 +160,22 @@ export default function RecargaPage() {
               ))}
             </ul>
 
-            <a href={plan.url} target="_blank" rel="noopener noreferrer">
+            {plan.url ? (
+              <a href={plan.url} target="_blank" rel="noopener noreferrer">
+                <Button
+                  className={`w-full cursor-pointer transition-all duration-300 hover:scale-[1.03] active:scale-[0.97] ${plan.btnClass}`}
+                >
+                  🚀 Seleccionar Plan
+                </Button>
+              </a>
+            ) : (
               <Button
-                className={`w-full cursor-pointer transition-all duration-300 hover:scale-[1.03] active:scale-[0.97] ${plan.btnClass}`}
+                disabled
+                className="w-full bg-gray-100 text-gray-400 cursor-not-allowed hover:bg-gray-100"
               >
-                🚀 Seleccionar Plan
+                Disponible pronto
               </Button>
-            </a>
+            )}
           </motion.div>
         ))}
       </div>
