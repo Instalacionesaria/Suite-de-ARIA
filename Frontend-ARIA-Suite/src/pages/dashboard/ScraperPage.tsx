@@ -14,6 +14,11 @@ const SCRAPER_TABS = [
 
 type ScraperTab = (typeof SCRAPER_TABS)[number]['key']
 
+// Mínimo de leads por búsqueda de Maps: equivale al piso de $0.50 del actor
+// de Apify ($0.50 / $0.007 por lead ≈ 72). El backend valida esto de forma
+// definitiva; aquí es solo una ayuda de UX.
+const MIN_LEADS_MAPS = 72
+
 export default function ScraperPage() {
   const [activeTab, setActiveTab] = useState<ScraperTab>('maps')
   const hasOnboardingData = !!localStorage.getItem('aria_onboarding_data')
@@ -100,6 +105,8 @@ interface Lead {
 function MapsForm() {
   const [businessType, setBusinessType] = useState('')
   const [location, setLocation] = useState('')
+  const [maxLeads, setMaxLeads] = useState(MIN_LEADS_MAPS)
+  const [leadsAvailable, setLeadsAvailable] = useState<number | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [isPolling, setIsPolling] = useState(false)
   const [status, setStatus] = useState<{ type: 'success' | 'error' | 'polling'; message: string } | null>(null)
@@ -114,6 +121,16 @@ function MapsForm() {
         if (data.localizacion) setLocation(data.localizacion)
       } catch { /* ignore */ }
     }
+  }, [])
+
+  // Cargar el saldo de leads disponibles para acotar la caja "Máx. Leads"
+  useEffect(() => {
+    const email = localStorage.getItem('aria_user_email')
+    if (!email) return
+    fetch(`${API_URL}/user-leads?email=${encodeURIComponent(email)}`)
+      .then((r) => r.json())
+      .then((d) => setLeadsAvailable(d.leads_disponibles_en_total ?? 0))
+      .catch(() => { /* ignore */ })
   }, [])
 
   const pollJobStatus = async (jobId: string) => {
@@ -176,6 +193,20 @@ function MapsForm() {
       return
     }
 
+    // Validar la cantidad de leads (mínimo 72, máximo el saldo disponible)
+    if (leadsAvailable !== null && leadsAvailable < MIN_LEADS_MAPS) {
+      setStatus({ type: 'error', message: `Necesitas al menos ${MIN_LEADS_MAPS} leads disponibles para scrapear. Ve a "Recarga de Leads" para añadir más.` })
+      return
+    }
+    if (maxLeads < MIN_LEADS_MAPS) {
+      setStatus({ type: 'error', message: `El mínimo a scrapear es ${MIN_LEADS_MAPS} leads.` })
+      return
+    }
+    if (leadsAvailable !== null && maxLeads > leadsAvailable) {
+      setStatus({ type: 'error', message: `Solo tienes ${leadsAvailable} leads disponibles.` })
+      return
+    }
+
     setIsLoading(true)
     setStatus(null)
     setResults([])
@@ -187,6 +218,7 @@ function MapsForm() {
         body: JSON.stringify({
           businessType: businessType.trim(),
           location: location.trim(),
+          maxLeads,
           getEmails: true,
           getBusinessModel: false,
           timestamp: new Date().toISOString(),
@@ -230,6 +262,21 @@ function MapsForm() {
             <Input id="location" placeholder="Ej: Cayma, Arequipa, Perú" className="h-10" value={location} onChange={(e) => setLocation(e.target.value)} />
             <p className="text-[11px] text-amber-600">
               ⚠️ Mínimo 3 partes separadas por coma (ej: distrito, ciudad, país). Evita zonas demasiado amplias.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="max-leads" className="text-sm text-gray-600">Máx. Leads a scrapear</Label>
+            <Input
+              id="max-leads"
+              type="number"
+              min={MIN_LEADS_MAPS}
+              max={leadsAvailable ?? undefined}
+              className="h-10"
+              value={maxLeads}
+              onChange={(e) => setMaxLeads(Number(e.target.value))}
+            />
+            <p className="text-[11px] text-gray-500">
+              Mínimo {MIN_LEADS_MAPS} leads{leadsAvailable !== null ? ` · Disponibles: ${leadsAvailable}` : ''}
             </p>
           </div>
         </div>

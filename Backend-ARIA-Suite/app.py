@@ -94,6 +94,7 @@ class ScrapingRequest(BaseModel):
     timestamp: datetime.datetime
     userId: str
     correo_electronico: str
+    maxLeads: int = 100
 
 class ApifyWebhookResource(BaseModel):
     defaultDatasetId: str
@@ -244,6 +245,9 @@ def create_scraping_job(user_id: str, request: ScrapingRequest) -> str:
         "location": request.location,
         "get_emails": request.getEmails,
         "get_business_model": request.getBusinessModel,
+        # Se guarda el tope pedido para recortar los resultados en el webhook
+        # (el actor puede traer 1-2 de más). Se sobrescribe con los resultados finales.
+        "results_data": {"max_leads": request.maxLeads},
     }
     response = requests.post(f"{SUPABASE_URL}/rest/v1/scraping_jobs", headers=headers, json=job_data)
     if response.status_code == 201:
@@ -520,11 +524,21 @@ async def start_scraping_job(request: ScrapingRequest):
         )
 
     usuario = validate_user_and_leads(email=request.correo_electronico)
-    job_id = create_scraping_job(usuario.get("id"), request)
-
-    # El job no puede traer más leads de los que el usuario tiene disponibles;
-    # eso define también el tope de gasto del run en Apify.
     leads_disponibles = usuario.get("leads_disponibles_en_total", 0) or 0
+
+    # El pedido debe estar entre el mínimo del actor (~72 con emails) y el saldo.
+    min_leads = google_maps_scraper.min_leads_for_charge(request.getEmails)
+    if leads_disponibles < min_leads:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Necesitas al menos {min_leads} leads disponibles para scrapear. Recarga para continuar.",
+        )
+    if request.maxLeads < min_leads:
+        raise HTTPException(status_code=400, detail=f"El mínimo a scrapear es {min_leads} leads.")
+    if request.maxLeads > leads_disponibles:
+        raise HTTPException(status_code=400, detail=f"Solo tienes {leads_disponibles} leads disponibles.")
+
+    job_id = create_scraping_job(usuario.get("id"), request)
 
     try:
         run_id = google_maps_scraper.start_google_maps_scrape(
@@ -533,7 +547,7 @@ async def start_scraping_job(request: ScrapingRequest):
             get_emails=request.getEmails,
             webhook_base_url=WEBHOOK_BASE_URL,
             job_id=job_id,
-            max_places=leads_disponibles,
+            max_places=request.maxLeads,
         )
         update_job_run_id(job_id, run_id)
     except Exception as e:
@@ -945,10 +959,17 @@ async def process_google_places_results(job_id: str, google_places_dataset_id: s
             print(f"Job {job_id} fue cancelado por el usuario; se ignora el webhook.")
             return
 
+        # Tope de leads pedido por el usuario (guardado al crear el job). El actor
+        # puede traer 1-2 de más por el límite de presupuesto; recortamos para que
+        # reciba y se le descuente exactamente lo solicitado.
+        max_leads = (job_details.get("results_data") or {}).get("max_leads")
+
         dataset_items = google_maps_scraper.get_dataset_items(google_places_dataset_id)
 
         if not job_details.get("get_business_model"):
             final_leads = google_maps_scraper.build_final_leads(dataset_items, job_details.get("get_emails"))
+            if max_leads:
+                final_leads = final_leads[:max_leads]
             final_json_output = {"data": final_leads, "results_count": len(final_leads)}
             update_job_results(job_id, "COMPLETED", results=final_json_output)
 
@@ -969,6 +990,8 @@ async def process_google_places_results(job_id: str, google_places_dataset_id: s
 
         if not urls_to_crawl:
             final_leads = google_maps_scraper.build_final_leads(dataset_items, job_details.get("get_emails"))
+            if max_leads:
+                final_leads = final_leads[:max_leads]
             final_json_output = {"data": final_leads, "results_count": len(final_leads)}
             update_job_results(job_id, "COMPLETED", results=final_json_output)
             user_id = job_details.get("user_id")

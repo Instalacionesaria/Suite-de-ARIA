@@ -1,4 +1,5 @@
 import os
+import math
 from typing import Dict, Any, List, Optional
 
 from apify_client import ApifyClient
@@ -12,6 +13,23 @@ COSTO_BASE_POR_LUGAR = 0.004       # evento place-scraped
 COSTO_FILTRO_POR_LUGAR = 0.001     # evento filter-applied (website=withWebsite)
 COSTO_CONTACTOS_POR_LUGAR = 0.002  # evento contact-details-scraped (scrapeContacts)
 MIN_MAX_TOTAL_CHARGE_USD = 0.5     # mínimo que acepta el actor (minimalMaxTotalChargeUsd)
+
+
+def cost_per_lead(get_emails: bool) -> float:
+    """Costo en USD por lugar/lead según el modo (con o sin contactos de email)."""
+    costo = COSTO_BASE_POR_LUGAR
+    if get_emails:
+        costo += COSTO_FILTRO_POR_LUGAR + COSTO_CONTACTOS_POR_LUGAR
+    return costo
+
+
+def min_leads_for_charge(get_emails: bool) -> int:
+    """
+    Mínimo de leads scrapeable en una búsqueda: el piso de $0.50 del actor
+    dividido por el costo por lead. Con emails (~$0.007) son 72; sin emails
+    (~$0.004) serían 125.
+    """
+    return math.ceil(MIN_MAX_TOTAL_CHARGE_USD / cost_per_lead(get_emails))
 
 
 def start_google_maps_scrape(
@@ -49,12 +67,11 @@ def start_google_maps_scrape(
         "proxyConfiguration": {"useApifyProxy": True},
     }
 
-    costo_por_lugar = COSTO_BASE_POR_LUGAR
     if get_emails:
         run_input["scrapeContacts"] = True
         run_input["website"] = "withWebsite"
-        costo_por_lugar += COSTO_FILTRO_POR_LUGAR + COSTO_CONTACTOS_POR_LUGAR
 
+    costo_por_lugar = cost_per_lead(get_emails)
     max_total_charge = max(round(max_places * costo_por_lugar, 2), MIN_MAX_TOTAL_CHARGE_USD)
 
     run = client.actor("compass/crawler-google-places").start(
