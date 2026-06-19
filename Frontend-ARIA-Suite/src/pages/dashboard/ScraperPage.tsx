@@ -243,6 +243,14 @@ function MapsForm() {
     }
   }
 
+  // Validación en vivo del campo "Máx. Leads" (feedback inmediato mientras escribe)
+  const maxLeadsError =
+    maxLeads < MIN_LEADS_MAPS
+      ? `El mínimo es ${MIN_LEADS_MAPS} leads.`
+      : leadsAvailable !== null && maxLeads > leadsAvailable
+        ? `Solo tienes ${leadsAvailable} leads disponibles.`
+        : null
+
   return (
     <motion.div {...formAnimation} className="space-y-5">
       <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-sm">
@@ -271,13 +279,17 @@ function MapsForm() {
               type="number"
               min={MIN_LEADS_MAPS}
               max={leadsAvailable ?? undefined}
-              className="h-10"
+              className={`h-10 ${maxLeadsError ? 'border-red-400 focus-visible:ring-red-300' : ''}`}
               value={maxLeads}
               onChange={(e) => setMaxLeads(Number(e.target.value))}
             />
-            <p className="text-[11px] text-gray-500">
-              Mínimo {MIN_LEADS_MAPS} leads{leadsAvailable !== null ? ` · Disponibles: ${leadsAvailable}` : ''}
-            </p>
+            {maxLeadsError ? (
+              <p className="text-[11px] text-red-600">⚠️ {maxLeadsError}</p>
+            ) : (
+              <p className="text-[11px] text-gray-500">
+                Mínimo {MIN_LEADS_MAPS} leads{leadsAvailable !== null ? ` · Disponibles: ${leadsAvailable}` : ''}
+              </p>
+            )}
           </div>
         </div>
 
@@ -299,8 +311,8 @@ function MapsForm() {
 
         <Button
           onClick={handleStartScraping}
-          disabled={isLoading || isPolling}
-          className="bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm cursor-pointer disabled:opacity-50"
+          disabled={isLoading || isPolling || !!maxLeadsError}
+          className="bg-indigo-600 hover:bg-indigo-700 text-white shadow-sm cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
         >
           {isPolling ? 'Scrapeando...' : isLoading ? 'Iniciando...' : '🚀 Iniciar Scraping'}
         </Button>
