@@ -6,6 +6,13 @@ from apify_client import ApifyClient
 
 APIFY_TOKEN = os.getenv("APIFY_API_TOKEN")
 
+# Precios pay-per-event del actor compass/crawler-google-places
+# (verificados el 2026-06-12 contra pricingInfo de runs reales)
+COSTO_BASE_POR_LUGAR = 0.004       # evento place-scraped
+COSTO_FILTRO_POR_LUGAR = 0.001     # evento filter-applied (website=withWebsite)
+COSTO_CONTACTOS_POR_LUGAR = 0.002  # evento contact-details-scraped (scrapeContacts)
+MIN_MAX_TOTAL_CHARGE_USD = 0.5     # mínimo que acepta el actor (minimalMaxTotalChargeUsd)
+
 
 def start_google_maps_scrape(
     business_type: str,
@@ -13,10 +20,19 @@ def start_google_maps_scrape(
     get_emails: bool,
     webhook_base_url: str,
     job_id: str,
+    max_places: int,
 ) -> str:
     """
     Inicia el actor 'compass/crawler-google-places' de Apify en modo no bloqueante
     y registra un webhook para continuar el flujo cuando el run termine.
+
+    El costo queda doblemente acotado:
+    - maxCrawledPlaces = max_places (límite blando: el actor puede pasarse un poco)
+    - max_total_charge_usd (límite duro: Apify corta el run al llegar al monto)
+
+    Con get_emails=True se activa el add-on de contactos de empresa
+    (scrapeContacts, $0.002/lugar) en lugar del enriquecimiento de leads
+    ($0.10/lead), que era demasiado caro para el modelo de precios.
 
     Devuelve el run_id del actor lanzado para tracking/cancelación.
     """
@@ -25,24 +41,35 @@ def start_google_maps_scrape(
     run_input: Dict[str, Any] = {
         "searchStringsArray": [business_type],
         "locationQuery": location,
-        "maxCrawledPlaces": 1,
+        "maxCrawledPlaces": max_places,
         "maxAutomaticZoomOut": 0,
         "language": "es",
         "maxImages": 0,
         "maxReviews": 0,
         "proxyConfiguration": {"useApifyProxy": True},
     }
+
+    costo_por_lugar = COSTO_BASE_POR_LUGAR
     if get_emails:
-        run_input["maximumLeadsEnrichmentRecords"] = 2
+        run_input["scrapeContacts"] = True
+        run_input["website"] = "withWebsite"
+        costo_por_lugar += COSTO_FILTRO_POR_LUGAR + COSTO_CONTACTOS_POR_LUGAR
+
+    max_total_charge = max(round(max_places * costo_por_lugar, 2), MIN_MAX_TOTAL_CHARGE_USD)
 
     run = client.actor("compass/crawler-google-places").start(
         run_input=run_input,
+        max_total_charge_usd=max_total_charge,
         webhooks=[{
-            "event_types": ["ACTOR.RUN.SUCCEEDED"],
+            # ABORTED incluido: cuando el run llega al tope de presupuesto,
+            # Apify lo aborta pero los resultados scrapeados se conservan.
+            "event_types": ["ACTOR.RUN.SUCCEEDED", "ACTOR.RUN.ABORTED"],
             "request_url": f"{webhook_base_url}/webhook-google-places-succeeded",
             "payload_template": f'{{"job_id": "{job_id}", "resource": {{{{resource}}}}}}',
         }],
     )
+
+    print(f"[Maps] Job {job_id}: hasta {max_places} lugares, tope ${max_total_charge} USD, emails={'sí' if get_emails else 'no'}")
 
     return run["id"]
 
@@ -112,6 +139,10 @@ def build_final_leads(
         for field in base_fields:
             if item.get(field):
                 final_lead[field] = item.get(field)
+        # Email de empresa del add-on scrapeContacts (llega como lista en 'emails')
+        if get_emails and item.get("emails"):
+            final_lead["email"] = item["emails"][0]
+            final_lead["emails"] = item["emails"]
         if get_emails and item.get("leadsEnrichment"):
             enrichment_data = item["leadsEnrichment"][0]
             for field in enrichment_fields:

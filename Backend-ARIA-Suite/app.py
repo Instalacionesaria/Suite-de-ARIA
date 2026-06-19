@@ -522,6 +522,10 @@ async def start_scraping_job(request: ScrapingRequest):
     usuario = validate_user_and_leads(email=request.correo_electronico)
     job_id = create_scraping_job(usuario.get("id"), request)
 
+    # El job no puede traer más leads de los que el usuario tiene disponibles;
+    # eso define también el tope de gasto del run en Apify.
+    leads_disponibles = usuario.get("leads_disponibles_en_total", 0) or 0
+
     try:
         run_id = google_maps_scraper.start_google_maps_scrape(
             business_type=request.businessType,
@@ -529,6 +533,7 @@ async def start_scraping_job(request: ScrapingRequest):
             get_emails=request.getEmails,
             webhook_base_url=WEBHOOK_BASE_URL,
             job_id=job_id,
+            max_places=leads_disponibles,
         )
         update_job_run_id(job_id, run_id)
     except Exception as e:
@@ -576,6 +581,11 @@ async def funnel_scrape(request: FunnelScrapeRequest):
     job_id = job_response.json()[0]["id"]
 
     # 5. Lanzar scraping en Apify (reutiliza el mismo scraper de Maps)
+    # El funnel siempre scrapea: si el usuario aún no tiene leads asignados,
+    # se usa un lote de cortesía de 100 lugares (~$0.70 de costo máximo).
+    leads_disponibles = usuario.get("leads_disponibles_en_total", 0) or 0
+    max_places_funnel = leads_disponibles if leads_disponibles > 0 else 100
+
     try:
         run_id = google_maps_scraper.start_google_maps_scrape(
             business_type=request.niche,
@@ -583,6 +593,7 @@ async def funnel_scrape(request: FunnelScrapeRequest):
             get_emails=True,
             webhook_base_url=WEBHOOK_BASE_URL,
             job_id=job_id,
+            max_places=max_places_funnel,
         )
         update_job_run_id(job_id, run_id)
     except Exception as e:
@@ -927,6 +938,12 @@ async def process_google_places_results(job_id: str, google_places_dataset_id: s
         if not job_response.json():
             return
         job_details = job_response.json()[0]
+
+        # El webhook también llega cuando el run se aborta (por tope de presupuesto
+        # o por cancelación del usuario). Si el usuario canceló, no tocar el job.
+        if job_details.get("status") == "CANCELLED":
+            print(f"Job {job_id} fue cancelado por el usuario; se ignora el webhook.")
+            return
 
         dataset_items = google_maps_scraper.get_dataset_items(google_places_dataset_id)
 
