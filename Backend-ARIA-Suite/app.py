@@ -65,11 +65,6 @@ except ImportError:
 # 1. MODELOS DE DATOS
 # =============================================
 
-# -- Login --
-class LoginRequest(BaseModel):
-    correo_electronico: str
-    codigo_de_acceso: str
-
 # -- Onboarding Chat --
 class MessageItem(BaseModel):
     role: str
@@ -92,8 +87,9 @@ class ScrapingRequest(BaseModel):
     getEmails: bool
     getBusinessModel: bool
     timestamp: datetime.datetime
-    userId: str
-    correo_electronico: str
+    cliente_id: Optional[str] = None       # identidad desde app-next (nueva llave)
+    userId: Optional[str] = None
+    correo_electronico: Optional[str] = None  # legacy (queda por compatibilidad)
     maxLeads: int = 100
 
 class ApifyWebhookResource(BaseModel):
@@ -111,8 +107,9 @@ class WebsiteCrawlerWebhookPayload(BaseModel):
 # -- Facebook Ads --
 class FacebookAdsScrapingRequest(BaseModel):
     url: str
-    userId: str
-    correo_electronico: str
+    cliente_id: Optional[str] = None
+    userId: Optional[str] = None
+    correo_electronico: Optional[str] = None
     timestamp: str
     scrape_url: Optional[str] = None
     link: Optional[str] = None
@@ -128,8 +125,9 @@ class FacebookPageItem(BaseModel):
 
 class FacebookPagesScrapingRequest(BaseModel):
     pages: List[FacebookPageItem]
-    userId: str
-    correo_electronico: str
+    cliente_id: Optional[str] = None
+    userId: Optional[str] = None
+    correo_electronico: Optional[str] = None
     timestamp: str
 
     def get_page_urls(self) -> List[str]:
@@ -144,8 +142,9 @@ class LinkedInScrapingRequest(BaseModel):
     country: str
     state: Optional[str] = ""
     number_of_leads: int = 100
+    cliente_id: Optional[str] = None
     userId: Optional[str] = None
-    correo_electronico: str
+    correo_electronico: Optional[str] = None
     timestamp: Optional[str] = None
 
 # -- HighLevel MCP --
@@ -153,16 +152,6 @@ class HighLevelMCPRequest(BaseModel):
     pit_token: str
     location_id: str
     orden: str
-
-# -- Funnel Scrape (n8n → ARIA Suite) --
-class FunnelScrapeRequest(BaseModel):
-    niche: str
-    location: str
-    email: str
-    name: Optional[str] = ""
-    phone: Optional[str] = ""
-    profession: Optional[str] = ""
-    clientType: Optional[str] = ""
 
 # -- Envío de Correos --
 class EmailRequest(BaseModel):
@@ -219,6 +208,10 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 apify_token = os.getenv("APIFY_API_TOKEN")
 WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL")
+
+# Leads gratis que recibe un cliente nuevo de app-next al provisionarse (primer uso).
+# Se puede sobrescribir con la env var LEADS_GRATIS_NUEVO_CLIENTE.
+LEADS_GRATIS_NUEVO_CLIENTE = int(os.getenv("LEADS_GRATIS_NUEVO_CLIENTE", "100"))
 
 
 # =============================================
@@ -380,12 +373,48 @@ def save_leads_to_table(user_id: str, job_id: str, source: str, leads: List[Dict
             print(f"Error guardando leads: {response.status_code} - {response.text}")
 
 
-def validate_user_and_leads(user_id: str = None, email: str = None) -> dict:
-    """Valida que el usuario exista y tenga leads disponibles. Retorna datos del usuario."""
+def get_or_create_user_by_cliente(cliente_id: str) -> dict:
+    """Busca el monedero (usuarios_scraper) de un cliente de app-next por su cliente_id.
+    Si no existe, lo provisiona automáticamente con leads gratis (primer uso).
+    El id interno (usuarios_scraper.id) sigue siendo la FK de jobs y leads."""
+    headers = get_supabase_headers()
+    response = requests.get(
+        f"{SUPABASE_URL}/rest/v1/usuarios_scraper?cliente_id=eq.{cliente_id}&select=*",
+        headers=headers,
+    )
+    if response.json():
+        return response.json()[0]
+
+    # Auto-provisión: primer uso de este cliente. No se escribe leads_disponibles_en_total
+    # (es columna generada = base_gratuitos + adicionales_pagados).
+    create_headers = get_supabase_headers(content_type=True, prefer_return=True)
+    nuevo = {
+        "cliente_id": cliente_id,
+        "numero_leads_scrapeados": 0,
+        "leads_base_gratuitos": LEADS_GRATIS_NUEVO_CLIENTE,
+        "leads_adicionales_pagados": 0,
+    }
+    create_resp = requests.post(
+        f"{SUPABASE_URL}/rest/v1/usuarios_scraper",
+        headers=create_headers,
+        json=nuevo,
+    )
+    if create_resp.status_code not in [200, 201] or not create_resp.json():
+        raise HTTPException(status_code=500, detail="No se pudo provisionar la cuenta de scraping.")
+    print(f"[Provisión] Cliente {cliente_id} creado con {LEADS_GRATIS_NUEVO_CLIENTE} leads gratis.")
+    return create_resp.json()[0]
+
+
+def validate_user_and_leads(cliente_id: str = None, user_id: str = None, email: str = None) -> dict:
+    """Valida que el usuario exista y tenga leads disponibles. Retorna datos del usuario.
+    Prioridad de identidad: cliente_id (app-next, con auto-provisión) > user_id > email (legacy)."""
     headers = get_supabase_headers()
 
     usuario = None
-    if user_id:
+    if cliente_id:
+        usuario = get_or_create_user_by_cliente(cliente_id)
+
+    if not usuario and user_id:
         response = requests.get(f"{SUPABASE_URL}/rest/v1/usuarios_scraper?id=eq.{user_id}&select=*", headers=headers)
         if response.json():
             usuario = response.json()[0]
@@ -425,43 +454,29 @@ async def root():
             "send_email": "POST /send-email",
             "send_email_highlevel": "POST /send-email-highlevel",
             "highlevel_mcp": "POST /highlevel-mcp",
-            "funnel_scrape": "POST /funnel-scrape",
+            "user_leads": "GET /user-leads?cliente_id=",
+            "mis_leads": "GET /mis-leads?cliente_id=",
             "job_status": "GET /job/{job_id}",
             "cancel_job": "POST /cancel-job/{job_id}",
         },
     }
 
 
-# --- Login ---
-@app.post("/login")
-async def login(request: LoginRequest):
-    headers = get_supabase_headers()
-    response = requests.get(
-        f"{SUPABASE_URL}/rest/v1/usuarios_scraper?correo_electronico=eq.{request.correo_electronico}&select=*",
-        headers=headers,
-    )
-    if not response.json():
-        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
-
-    usuario = response.json()[0]
-    if usuario.get("codigo_de_acceso") != request.codigo_de_acceso:
-        raise HTTPException(status_code=401, detail="Código de acceso incorrecto.")
-
-    return {
-        "success": True,
-        "user": {
-            "id": usuario.get("id"),
-            "correo_electronico": usuario.get("correo_electronico"),
-            "nombre": usuario.get("nombre"),
-            "leads_disponibles_en_total": usuario.get("leads_disponibles_en_total", 0),
-            "numero_leads_scrapeados": usuario.get("numero_leads_scrapeados", 0),
-        },
-    }
-
-
 # --- User Leads (para sidebar) ---
 @app.get("/user-leads")
-async def get_user_leads(email: str):
+async def get_user_leads(cliente_id: str = None, email: str = None):
+    # Con cliente_id (app-next) se auto-provisiona la cuenta al consultar el saldo,
+    # así el monedero existe desde que el alumno abre el panel de Prospección.
+    if cliente_id:
+        usuario = get_or_create_user_by_cliente(cliente_id)
+        return {
+            "numero_leads_scrapeados": usuario.get("numero_leads_scrapeados", 0),
+            "leads_disponibles_en_total": usuario.get("leads_disponibles_en_total", 0),
+        }
+
+    if not email:
+        raise HTTPException(status_code=400, detail="Falta cliente_id o email.")
+
     headers = get_supabase_headers()
     response = requests.get(
         f"{SUPABASE_URL}/rest/v1/usuarios_scraper?correo_electronico=eq.{email}&select=numero_leads_scrapeados,leads_disponibles_en_total",
@@ -478,16 +493,24 @@ async def get_user_leads(email: str):
 
 # --- Mis Leads (tabla aria_suite_leads_per_user) ---
 @app.get("/mis-leads")
-async def get_mis_leads(email: str):
+async def get_mis_leads(cliente_id: str = None, email: str = None):
     headers = get_supabase_headers()
 
-    # Obtener user_id
+    # Obtener user_id por cliente_id (app-next) o por email (legacy)
+    if cliente_id:
+        filtro = f"cliente_id=eq.{cliente_id}"
+    elif email:
+        filtro = f"correo_electronico=eq.{email}"
+    else:
+        raise HTTPException(status_code=400, detail="Falta cliente_id o email.")
+
     user_response = requests.get(
-        f"{SUPABASE_URL}/rest/v1/usuarios_scraper?correo_electronico=eq.{email}&select=id",
+        f"{SUPABASE_URL}/rest/v1/usuarios_scraper?{filtro}&select=id",
         headers=headers,
     )
     if not user_response.json():
-        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
+        # Cuenta aún sin provisionar (no ha scrapeado todavía) → sin leads.
+        return []
     user_id = user_response.json()[0]["id"]
 
     # Obtener leads
@@ -523,7 +546,7 @@ async def start_scraping_job(request: ScrapingRequest):
             detail="La localización debe tener al menos 3 partes separadas por coma. Ej: 'Cayma, Arequipa, Perú' (distrito, ciudad, país).",
         )
 
-    usuario = validate_user_and_leads(email=request.correo_electronico)
+    usuario = validate_user_and_leads(cliente_id=request.cliente_id, email=request.correo_electronico)
     leads_disponibles = usuario.get("leads_disponibles_en_total", 0) or 0
 
     # El pedido debe estar entre el mínimo del actor (~72 con emails) y el saldo.
@@ -555,74 +578,6 @@ async def start_scraping_job(request: ScrapingRequest):
         raise HTTPException(status_code=502, detail=f"Error al iniciar el actor de Apify: {e}")
 
     return {"status": "success", "message": "Tu búsqueda ha comenzado.", "jobId": job_id}
-
-
-# --- Funnel Scrape (n8n → ARIA Suite) ---
-@app.post("/funnel-scrape")
-async def funnel_scrape(request: FunnelScrapeRequest):
-    """
-    Endpoint llamado por n8n cuando un lead llena el funnel de ventas.
-    El usuario ya debe existir en Supabase (creado previamente por n8n).
-    Solo lanza el scraping de Google Maps con niche + location.
-    """
-    headers = get_supabase_headers(content_type=True, prefer_return=True)
-
-    # 1. Buscar usuario por email (ya creado por n8n)
-    search_response = requests.get(
-        f"{SUPABASE_URL}/rest/v1/usuarios_scraper?correo_electronico=eq.{request.email}&select=*",
-        headers=get_supabase_headers(),
-    )
-    if not search_response.json():
-        raise HTTPException(status_code=404, detail=f"Usuario {request.email} no encontrado. Debe ser creado en n8n antes de llamar a este endpoint.")
-    usuario = search_response.json()[0]
-
-    # 2. Crear scraping job (sin validar leads disponibles — el funnel siempre scrapea)
-    job_data = {
-        "user_id": usuario["id"],
-        "status": "PENDING",
-        "business_type": request.niche,
-        "location": request.location,
-        "get_emails": True,
-        "get_business_model": False,
-    }
-    job_response = requests.post(
-        f"{SUPABASE_URL}/rest/v1/scraping_jobs",
-        headers=headers,
-        json=job_data,
-    )
-    if job_response.status_code not in [200, 201]:
-        raise HTTPException(status_code=500, detail="No se pudo registrar el trabajo de scraping.")
-    job_id = job_response.json()[0]["id"]
-
-    # 5. Lanzar scraping en Apify (reutiliza el mismo scraper de Maps)
-    # El funnel siempre scrapea: si el usuario aún no tiene leads asignados,
-    # se usa un lote de cortesía de 100 lugares (~$0.70 de costo máximo).
-    leads_disponibles = usuario.get("leads_disponibles_en_total", 0) or 0
-    max_places_funnel = leads_disponibles if leads_disponibles > 0 else 100
-
-    try:
-        run_id = google_maps_scraper.start_google_maps_scrape(
-            business_type=request.niche,
-            location=request.location,
-            get_emails=True,
-            webhook_base_url=WEBHOOK_BASE_URL,
-            job_id=job_id,
-            max_places=max_places_funnel,
-        )
-        update_job_run_id(job_id, run_id)
-    except Exception as e:
-        update_job_results(job_id, "FAILED", error_message=str(e))
-        raise HTTPException(status_code=502, detail=f"Error al iniciar Apify: {e}")
-
-    print(f"[Funnel] Scraping iniciado para {request.email}: '{request.niche}' en '{request.location}' (job: {job_id})")
-
-    return {
-        "status": "success",
-        "message": f"Scraping iniciado para '{request.niche}' en '{request.location}'.",
-        "jobId": job_id,
-        "userId": usuario["id"],
-        "email": request.email,
-    }
 
 
 # --- Job Status ---
@@ -775,7 +730,7 @@ async def start_facebook_ads_scraping(request: FacebookAdsScrapingRequest):
         if not scrape_url:
             raise HTTPException(status_code=400, detail="Falta la URL de Facebook Ads.")
 
-        usuario = validate_user_and_leads(user_id=request.userId, email=request.correo_electronico)
+        usuario = validate_user_and_leads(cliente_id=request.cliente_id, user_id=request.userId, email=request.correo_electronico)
         user_id = usuario.get("id")
 
         job_headers = get_supabase_headers(content_type=True, prefer_return=True)
@@ -834,7 +789,7 @@ async def start_facebook_pages_scraping(request: FacebookPagesScrapingRequest):
         original_pages_data = unique_pages_data
         page_urls = [page.get("page_profile_uri") for page in unique_pages_data]
 
-        usuario = validate_user_and_leads(user_id=request.userId, email=request.correo_electronico)
+        usuario = validate_user_and_leads(cliente_id=request.cliente_id, user_id=request.userId, email=request.correo_electronico)
         user_id = usuario.get("id")
 
         job_headers = get_supabase_headers(content_type=True, prefer_return=True)
@@ -889,7 +844,7 @@ async def start_linkedin_scraping(request: LinkedInScrapingRequest):
     if request.number_of_leads < 100 or request.number_of_leads > 30000:
         raise HTTPException(status_code=400, detail="number_of_leads debe estar entre 100 y 30000.")
 
-    usuario = validate_user_and_leads(user_id=request.userId, email=request.correo_electronico)
+    usuario = validate_user_and_leads(cliente_id=request.cliente_id, user_id=request.userId, email=request.correo_electronico)
     user_id = usuario.get("id")
 
     headers = get_supabase_headers(content_type=True, prefer_return=True)
