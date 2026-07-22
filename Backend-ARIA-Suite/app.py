@@ -55,9 +55,10 @@ except ImportError:
     print("⚠️ highlevel_mcp no disponible aún")
 
 try:
-    from tools_scrapers.envio_de_correo_LC_HighLevel import enviar_correo_masivo_lc
+    from tools_scrapers.envio_de_correo_LC_HighLevel import enviar_correo_masivo_lc, enviar_whatsapp_masivo_lc
 except ImportError:
     enviar_correo_masivo_lc = None
+    enviar_whatsapp_masivo_lc = None
     print("⚠️ envio_de_correo_LC_HighLevel no disponible aún")
 
 
@@ -175,6 +176,19 @@ class EmailLCRequest(BaseModel):
     mensaje: str
     destinatarios: List[EmailDestinatarioLC]
     email_from: Optional[str] = ""
+
+# -- Envío de WhatsApp via LeadConnector (HighLevel) --
+class WhatsAppDestinatarioLC(BaseModel):
+    telefono: str
+    nombre: Optional[str] = ""
+    email: Optional[str] = ""
+    empresa: Optional[str] = ""
+
+class WhatsAppLCRequest(BaseModel):
+    pit_token: str
+    location_id: str
+    mensaje: str
+    destinatarios: List[WhatsAppDestinatarioLC]
 
 
 # =============================================
@@ -453,6 +467,7 @@ async def root():
             "linkedin_apollo": "POST /start-linkedin-scraping",
             "send_email": "POST /send-email",
             "send_email_highlevel": "POST /send-email-highlevel",
+            "send_whatsapp_highlevel": "POST /send-whatsapp-highlevel",
             "highlevel_mcp": "POST /highlevel-mcp",
             "user_leads": "GET /user-leads?cliente_id=",
             "mis_leads": "GET /mis-leads?cliente_id=",
@@ -688,6 +703,35 @@ async def send_email_highlevel_endpoint(request: EmailLCRequest):
         mensaje_html=request.mensaje,
         destinatarios=destinatarios,
         email_from=request.email_from or "",
+    )
+
+    if resultado["enviados"] == 0 and resultado["fallidos"] > 0:
+        raise HTTPException(status_code=500, detail=resultado)
+
+    return resultado
+
+
+# --- Envío de WhatsApp via LeadConnector (HighLevel) ---
+@app.post("/send-whatsapp-highlevel")
+async def send_whatsapp_highlevel_endpoint(request: WhatsAppLCRequest):
+    if enviar_whatsapp_masivo_lc is None:
+        raise HTTPException(status_code=501, detail="Módulo de envío via LeadConnector no disponible aún.")
+    if not request.pit_token.strip():
+        raise HTTPException(status_code=400, detail="El campo pit_token no puede estar vacío.")
+    if not request.location_id.strip():
+        raise HTTPException(status_code=400, detail="El campo location_id no puede estar vacío.")
+    if not request.destinatarios:
+        raise HTTPException(status_code=400, detail="La lista de destinatarios está vacía.")
+    if not request.mensaje.strip():
+        raise HTTPException(status_code=400, detail="El mensaje no puede estar vacío.")
+
+    destinatarios = [d.model_dump() for d in request.destinatarios]
+
+    resultado = enviar_whatsapp_masivo_lc(
+        pit_token=request.pit_token,
+        location_id=request.location_id,
+        mensaje=request.mensaje,
+        destinatarios=destinatarios,
     )
 
     if resultado["enviados"] == 0 and resultado["fallidos"] > 0:

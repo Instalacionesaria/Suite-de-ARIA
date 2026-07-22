@@ -228,3 +228,173 @@ def enviar_correo_masivo_lc(
         "message": f"Se enviaron {len(enviados)} correos correctamente."
         + (f" {len(fallidos)} fallaron." if fallidos else ""),
     }
+
+
+# =============================================================
+# WHATSAPP — misma API de conversaciones (type: "WhatsApp"),
+# aprovechando el WhatsApp ya conectado en la subcuenta de HighLevel.
+# Se identifica al contacto por TELÉFONO (no por email).
+# =============================================================
+
+def _normalizar_telefono(telefono: str) -> str:
+    """Deja el teléfono en formato apto para WhatsApp: solo '+' y dígitos.
+    Ej: '+51 54 270575' -> '+5154270575'."""
+    if not telefono:
+        return ""
+    t = telefono.strip()
+    mas = t.startswith("+")
+    digitos = "".join(c for c in t if c.isdigit())
+    return ("+" + digitos) if mas else digitos
+
+
+def buscar_contacto_por_telefono(pit_token: str, location_id: str, telefono: str) -> Optional[dict]:
+    """Busca un contacto existente en HighLevel por teléfono."""
+    headers = _get_headers(pit_token)
+    tel_norm = _normalizar_telefono(telefono)
+    try:
+        response = requests.get(
+            f"{LC_BASE_URL}/contacts/",
+            headers=headers,
+            params={"locationId": location_id, "query": telefono},
+        )
+        if response.status_code == 200:
+            contacts = response.json().get("contacts", [])
+            for contact in contacts:
+                if _normalizar_telefono(contact.get("phone", "")) == tel_norm:
+                    return contact
+            # si no hay match exacto pero la búsqueda devolvió alguien, tómalo
+            if contacts:
+                return contacts[0]
+        return None
+    except Exception as e:
+        print(f"Error buscando contacto por teléfono {telefono}: {e}")
+        return None
+
+
+def crear_contacto_wa(
+    pit_token: str,
+    location_id: str,
+    telefono: str,
+    nombre: str = "",
+    email: str = "",
+    empresa: str = "",
+) -> Optional[dict]:
+    """Crea un contacto en HighLevel con teléfono como dato principal (para WhatsApp)."""
+    headers = _get_headers(pit_token)
+    partes_nombre = nombre.strip().split(" ", 1) if nombre else [""]
+    first_name = partes_nombre[0]
+    last_name = partes_nombre[1] if len(partes_nombre) > 1 else ""
+
+    body = {
+        "locationId": location_id,
+        "phone": _normalizar_telefono(telefono),
+        "firstName": first_name,
+        "lastName": last_name,
+    }
+    if email:
+        body["email"] = email
+    if empresa:
+        body["companyName"] = empresa
+
+    try:
+        response = requests.post(f"{LC_BASE_URL}/contacts/", headers=headers, json=body)
+        if response.status_code in [200, 201]:
+            return response.json().get("contact")
+        # Contacto duplicado: HighLevel devuelve el id existente en meta.contactId
+        if response.status_code in [400, 422]:
+            try:
+                meta = response.json().get("meta", {})
+                if meta.get("contactId"):
+                    return {"id": meta["contactId"]}
+            except Exception:
+                pass
+        print(f"Error creando contacto WA {telefono}: {response.status_code} - {response.text}")
+        return None
+    except Exception as e:
+        print(f"Excepción creando contacto WA {telefono}: {e}")
+        return None
+
+
+def obtener_o_crear_contacto_wa(
+    pit_token: str,
+    location_id: str,
+    telefono: str,
+    nombre: str = "",
+    email: str = "",
+    empresa: str = "",
+) -> Optional[dict]:
+    """Busca un contacto por teléfono; si no existe, lo crea."""
+    contacto = buscar_contacto_por_telefono(pit_token, location_id, telefono)
+    if contacto:
+        return contacto
+    return crear_contacto_wa(pit_token, location_id, telefono, nombre, email, empresa)
+
+
+def enviar_whatsapp_lc(pit_token: str, contact_id: str, mensaje: str) -> dict:
+    """Envía un WhatsApp a un contacto existente vía LeadConnector (type: WhatsApp)."""
+    headers = _get_headers(pit_token)
+    body = {
+        "type": "WhatsApp",
+        "contactId": contact_id,
+        "message": mensaje,
+    }
+    try:
+        print(f"[HighLevel WhatsApp] Enviando body: {body}")
+        response = requests.post(f"{LC_BASE_URL}/conversations/messages", headers=headers, json=body)
+        if response.status_code in [200, 201]:
+            return {"success": True, "message": "WhatsApp enviado correctamente."}
+        error_detail = response.text
+        try:
+            error_detail = response.json().get("message", response.text)
+        except Exception:
+            pass
+        print(f"[HighLevel WhatsApp] Error {response.status_code}: {response.text}")
+        return {"success": False, "message": f"Error {response.status_code}: {error_detail}"}
+    except Exception as e:
+        return {"success": False, "message": f"Error de conexión: {e}"}
+
+
+def enviar_whatsapp_masivo_lc(
+    pit_token: str,
+    location_id: str,
+    mensaje: str,
+    destinatarios: list[dict],
+) -> dict:
+    """Envío masivo de WhatsApp vía LeadConnector.
+
+    destinatarios: lista de dicts con al menos 'telefono', opcionalmente 'nombre', 'email', 'empresa'.
+    """
+    enviados = []
+    fallidos = []
+
+    for dest in destinatarios:
+        telefono = _normalizar_telefono(dest.get("telefono", ""))
+        if not telefono:
+            fallidos.append({"telefono": "(vacío)", "error": "Teléfono vacío"})
+            continue
+
+        contacto = obtener_o_crear_contacto_wa(
+            pit_token=pit_token,
+            location_id=location_id,
+            telefono=telefono,
+            nombre=dest.get("nombre", ""),
+            email=dest.get("email", ""),
+            empresa=dest.get("empresa", ""),
+        )
+        if not contacto:
+            fallidos.append({"telefono": telefono, "error": "No se pudo crear/encontrar el contacto en HighLevel"})
+            continue
+
+        resultado = enviar_whatsapp_lc(pit_token, contacto.get("id"), mensaje)
+        if resultado["success"]:
+            enviados.append(telefono)
+        else:
+            fallidos.append({"telefono": telefono, "error": resultado["message"]})
+
+    return {
+        "enviados": len(enviados),
+        "fallidos": len(fallidos),
+        "detalle_errores": fallidos,
+        "message": f"Se enviaron {len(enviados)} WhatsApp correctamente."
+        + (f" {len(fallidos)} fallaron." if fallidos else ""),
+    }
