@@ -43,6 +43,12 @@ except ImportError:
     print("⚠️ linkedin_apollo_scraper no disponible aún")
 
 try:
+    from tools_scrapers import ad_spy_scraper
+except ImportError:
+    ad_spy_scraper = None
+    print("⚠️ ad_spy_scraper no disponible aún")
+
+try:
     from tools_scrapers.envio_de_correo import enviar_correo
 except ImportError:
     enviar_correo = None
@@ -147,6 +153,15 @@ class LinkedInScrapingRequest(BaseModel):
     userId: Optional[str] = None
     correo_electronico: Optional[str] = None
     timestamp: Optional[str] = None
+
+# -- Ad Spy (Espía de Anuncios — Meta Ad Library) --
+class AdSpyRequest(BaseModel):
+    query: str
+    country: Optional[str] = "ALL"
+    source: Optional[str] = "meta"        # por ahora solo 'meta'
+    count: Optional[int] = 60
+    cliente_id: Optional[str] = None       # solo identidad; NO consume saldo de leads
+    correo_electronico: Optional[str] = None
 
 # -- HighLevel MCP --
 class HighLevelMCPRequest(BaseModel):
@@ -465,6 +480,7 @@ async def root():
             "facebook_ads": "POST /start-facebook-ads-scraping",
             "facebook_pages": "POST /start-facebook-pages-scraping",
             "linkedin_apollo": "POST /start-linkedin-scraping",
+            "ad_spy": "POST /start-ad-spy",
             "send_email": "POST /send-email",
             "send_email_highlevel": "POST /send-email-highlevel",
             "send_whatsapp_highlevel": "POST /send-whatsapp-highlevel",
@@ -927,6 +943,47 @@ async def start_linkedin_scraping(request: LinkedInScrapingRequest):
     }
 
 
+# --- Ad Spy (Espía de Anuncios — Meta Ad Library) ---
+@app.post("/start-ad-spy")
+async def start_ad_spy(request: AdSpyRequest):
+    """Espía la Meta Ad Library por nicho/marca/página. NO consume saldo de leads
+    (es investigación de competencia, no generación de leads)."""
+    if ad_spy_scraper is None:
+        raise HTTPException(status_code=501, detail="Módulo ad_spy_scraper no disponible aún.")
+    if not request.query.strip():
+        raise HTTPException(status_code=400, detail="Escribe un nicho, marca o página a espiar.")
+
+    # Crea un job (misma tabla scraping_jobs), marcado como AdSpy. Sin validar saldo.
+    headers = get_supabase_headers(content_type=True, prefer_return=True)
+    job_data = {
+        "user_id": None,
+        "status": "PENDING",
+        "business_type": f"AdSpy: {request.query.strip()}",
+        "location": (request.country or "ALL"),
+        "get_emails": False,
+        "get_business_model": False,
+    }
+    job_response = requests.post(f"{SUPABASE_URL}/rest/v1/scraping_jobs", headers=headers, json=job_data)
+    if job_response.status_code not in [200, 201]:
+        raise HTTPException(status_code=500, detail="No se pudo registrar el trabajo de Ad Spy.")
+    job_id = job_response.json()[0]["id"]
+
+    try:
+        run_id = ad_spy_scraper.start_ad_spy_scrape(
+            query=request.query.strip(),
+            country=request.country or "ALL",
+            webhook_base_url=WEBHOOK_BASE_URL,
+            job_id=job_id,
+            count=request.count or 60,
+        )
+        update_job_run_id(job_id, run_id)
+    except Exception as e:
+        update_job_results(job_id, "FAILED", error_message=str(e))
+        raise HTTPException(status_code=502, detail=f"Error al iniciar el actor de Apify: {e}")
+
+    return {"status": "success", "message": "Búsqueda de anuncios iniciada.", "jobId": job_id}
+
+
 # =============================================
 # 5. WEBHOOKS Y TAREAS EN SEGUNDO PLANO
 # =============================================
@@ -1187,4 +1244,34 @@ async def process_linkedin_apollo_results(job_id: str, dataset_id: str):
 
     except Exception as e:
         print(f"Error procesando resultados de LinkedIn para job {job_id}: {e}")
+        update_job_results(job_id, "FAILED", error_message=str(e))
+
+
+# --- Ad Spy Webhook (Meta Ad Library) ---
+@app.post("/webhook-ad-spy-succeeded")
+async def handle_ad_spy_webhook(payload: GooglePlacesWebhookPayload, background_tasks: BackgroundTasks):
+    job_id = payload.job_id
+    dataset_id = payload.resource.defaultDatasetId
+    print(f"Webhook: Ad Spy terminó para Job ID: {job_id}")
+    background_tasks.add_task(process_ad_spy_results, job_id, dataset_id)
+    return {"status": "webhook received"}
+
+
+async def process_ad_spy_results(job_id: str, dataset_id: str):
+    """Procesa los anuncios espiados y los guarda en results_data del job.
+    NO guarda en aria_suite_leads_per_user ni descuenta saldo (es investigación)."""
+    try:
+        dataset_items = ad_spy_scraper.get_dataset_items(dataset_id)
+        if dataset_items and isinstance(dataset_items[0], dict) and "error" in dataset_items[0] and len(dataset_items[0]) == 1:
+            update_job_results(job_id, "FAILED", error_message=str(dataset_items[0].get("error", "Error del actor")))
+            return
+
+        ads = ad_spy_scraper.build_ad_spy_items(dataset_items)
+        final_json_output = {"data": ads, "results_count": len(ads)}
+        update_job_results(job_id, "COMPLETED", results=final_json_output)
+        print(f"Ad Spy {job_id} completado. {len(ads)} anuncios espiados.")
+
+    except Exception as e:
+        print(f"Error procesando resultados de Ad Spy para job {job_id}: {e}")
+        traceback.print_exc()
         update_job_results(job_id, "FAILED", error_message=str(e))
