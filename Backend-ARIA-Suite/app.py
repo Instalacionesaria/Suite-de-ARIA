@@ -953,10 +953,17 @@ async def start_ad_spy(request: AdSpyRequest):
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="Escribe un nicho, marca o página a espiar.")
 
+    # scraping_jobs.user_id es NOT NULL. Resolvemos el monedero del cliente (por cliente_id)
+    # y usamos su id — pero NO se descuenta saldo (Ad Spy es investigación, no genera leads).
+    if not request.cliente_id:
+        raise HTTPException(status_code=400, detail="Falta cliente_id.")
+    usuario = get_or_create_user_by_cliente(request.cliente_id)
+    user_id = usuario.get("id")
+
     # Crea un job (misma tabla scraping_jobs), marcado como AdSpy. Sin validar saldo.
     headers = get_supabase_headers(content_type=True, prefer_return=True)
     job_data = {
-        "user_id": None,
+        "user_id": user_id,
         "status": "PENDING",
         "business_type": f"AdSpy: {request.query.strip()}",
         "location": (request.country or "ALL"),
