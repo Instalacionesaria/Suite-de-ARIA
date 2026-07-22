@@ -1,8 +1,12 @@
 """
-Scraper de leads de LinkedIn vía Apollo (actor 'peakydev/leads-scraper' en Apify).
+Scraper de leads de LinkedIn vía Apollo (actor 'peakydev/leads-scraper-ppe' en Apify).
 
 Recibe job_title, country, state y number_of_leads. Lanza el actor en modo
 no bloqueante y registra un webhook para procesar los resultados al terminar.
+
+Nota: se usa la variante '-ppe' (pay-per-event, ~$0.10/run) en vez del actor de
+alquiler 'peakydev/leads-scraper' (cuya prueba gratis venció). El input del -ppe
+usa otros nombres de campo: totalResults / personTitle / personCountry / personState.
 
 Autor: Ing. Kevin Inofuente Colque - DataPath
 """
@@ -14,7 +18,7 @@ from apify_client import ApifyClient
 
 
 APIFY_TOKEN = os.getenv("APIFY_API_TOKEN")
-ACTOR_ID = "peakydev/leads-scraper"
+ACTOR_ID = "peakydev/leads-scraper-ppe"
 
 
 def start_linkedin_scrape(
@@ -30,18 +34,17 @@ def start_linkedin_scrape(
     """
     client = ApifyClient(APIFY_TOKEN)
 
-    person_locations: List[str] = []
-    if state and country:
-        person_locations.append(f"{state}, {country}")
-    elif country:
-        person_locations.append(country)
-
+    # Campos del actor -ppe (distintos al actor de alquiler):
+    #   totalResults, personTitle (array), personCountry (array), personState (array), includeEmails.
     run_input: Dict[str, Any] = {
-        "totalRecords": int(number_of_leads),
-        "personTitles": [job_title] if job_title else [],
+        "totalResults": int(number_of_leads),
+        "personTitle": [job_title] if job_title else [],
+        "includeEmails": True,
     }
-    if person_locations:
-        run_input["personLocations"] = person_locations
+    if country:
+        run_input["personCountry"] = [country]
+    if state:
+        run_input["personState"] = [state]
 
     run = client.actor(ACTOR_ID).start(
         run_input=run_input,

@@ -26,6 +26,18 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_scraper_cliente_id
 
 
 -- ============================================================
+-- FASE 1.5 — QUITAR NOT NULL a las columnas de identidad legacy
+-- ============================================================
+-- La auto-provisión inserta filas solo con cliente_id + saldo. Estas dos
+-- columnas son NOT NULL sin default, así que bloquean el INSERT (error 23502).
+-- Se les quita el NOT NULL ahora (no destruye datos); en la Fase 3 se DROPean.
+-- (codigo_de_acceso ya es nullable; estado_del_usuario/fecha_registro tienen default.)
+
+ALTER TABLE usuarios_scraper ALTER COLUMN nombre_completo    DROP NOT NULL;
+ALTER TABLE usuarios_scraper ALTER COLUMN correo_electronico DROP NOT NULL;
+
+
+-- ============================================================
 -- FASE 2 — BACKFILL (rellenar cliente_id de las filas existentes)
 -- ============================================================
 -- Las dos bases (urxu… scraper y pajh… app-next) son proyectos Supabase
@@ -49,9 +61,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_usuarios_scraper_cliente_id
 --   [ ] proxy route.ts envía cliente_id = sesion.sub
 --   [ ] Probado en vivo: scrapea, muestra saldo y "Mis Leads"
 --
--- ALTER TABLE usuarios_scraper DROP COLUMN codigo_de_acceso;   -- password muerto
--- ALTER TABLE usuarios_scraper DROP COLUMN nombre;             -- sale de app-next
--- ALTER TABLE usuarios_scraper DROP COLUMN correo_electronico; -- funnel eliminado
+-- ALTER TABLE usuarios_scraper DROP COLUMN codigo_de_acceso;    -- password muerto
+-- ALTER TABLE usuarios_scraper DROP COLUMN nombre_completo;     -- sale de app-next
+-- ALTER TABLE usuarios_scraper DROP COLUMN correo_electronico;  -- funnel eliminado
 --
 -- Opcional: hacer cliente_id obligatorio una vez migrado todo.
 -- ALTER TABLE usuarios_scraper ALTER COLUMN cliente_id SET NOT NULL;
