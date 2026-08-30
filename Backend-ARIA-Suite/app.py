@@ -112,7 +112,33 @@ class ScrapingRequest(BaseModel):
     maxLeads: int = 100
 
 class ApifyWebhookResource(BaseModel):
+    """
+    El objeto `run` de Apify, tal como llega en el cuerpo del webhook.
+
+    ═══════════════════════════════════════════════════════════════════════════
+    EL COSTO YA VENÍA Y ESTE MODELO LO TIRABA
+
+    La plantilla de los seis webhooks manda `{{resource}}` ENTERO —el run completo— y Pydantic
+    descarta en silencio todo campo que el modelo no declare. Declaraba uno solo, así que
+    `usageTotalUsd` llegaba en cada webhook y se perdía.
+
+    O sea que medir el gasto de Apify no necesita ninguna llamada a su API ni el token en
+    ningún lugar nuevo: sólo dejar de descartar un campo.
+    ═══════════════════════════════════════════════════════════════════════════
+    """
+
     defaultDatasetId: str
+
+    # El identificador del run que terminó. Sirve para rastrear un cargo de la factura de Apify
+    # hasta un trabajo nuestro, y como plan B si algún día `usageTotalUsd` no viniera.
+    id: Optional[str] = None
+
+    # Lo que ESTA corrida gastó, en dólares, ya sumado por Apify.
+    #
+    # `Optional` y no obligatorio, y la razón importa: estos webhooks son los que GUARDAN LOS
+    # LEADS. Un modelo que exija el campo hace que Pydantic rechace el cuerpo entero si falta,
+    # y ahí se cambiaría una columna de contabilidad vacía por leads pagados que se pierden.
+    usageTotalUsd: Optional[float] = None
 
 class GooglePlacesWebhookPayload(BaseModel):
     job_id: str
@@ -454,6 +480,78 @@ def update_job_results(job_id: str, status: str, results: Optional[Dict] = None,
     else:
         print(f"Error al actualizar resultados del job {job_id}. Status: {response.status_code}, Response: {response.text}")
         return False
+
+
+def add_job_cost(job_id: str, usd: Optional[float]) -> None:
+    """
+    Suma al costo del trabajo lo que gastó un run de Apify.
+
+    ═══════════════════════════════════════════════════════════════════════════
+    ACUMULA, NO PISA — Y ESO ES TODO EL PUNTO
+
+    Un trabajo de Google Maps son DOS actores: `crawler-google-places` y, encadenado desde su
+    propio webhook, `website-content-crawler`. Cada uno dispara su webhook y reporta su gasto.
+    Con un `update` a secas el costo del trabajo terminaría siendo el del último actor.
+
+    Y por eso mismo esto no se podía hacer desde Comando Central: `apify_actor_run_id` guarda
+    sólo el run del PRIMER actor —`update_job_run_id` se llama al lanzarlo— y el del segundo no
+    se guarda en ninguna parte. Preguntándole a Apify por el run conocido, el costo salía más
+    barato que el real y nada fallaba.
+
+    `usd` puede ser `None`: el webhook llegó sin el campo. Se sella `costo_consultado_el` igual,
+    para que "se preguntó y no había dato" no se confunda con "nunca se preguntó" — que es la
+    distinción por la que esa columna existe.
+    ═══════════════════════════════════════════════════════════════════════════
+    """
+    if usd is not None and usd < 0:
+        # Un cargo negativo no es un estado posible de una factura. Es un dato que no
+        # entendemos, y sumarlo restaría gasto real.
+        print(f"[Costo] Apify reportó {usd} para el trabajo {job_id}: se ignora por negativo.")
+        usd = None
+
+    try:
+        lectura = requests.get(
+            f"{SUPABASE_URL}/rest/v1/{TABLA_TRABAJOS}?id=eq.{job_id}&select=costo_usd",
+            headers=get_supabase_headers(),
+            timeout=15,
+        )
+
+        # ── SI LA LECTURA FALLA NO SE ESCRIBE ────────────────────────────────
+        #
+        # Es el mismo cuidado que `get_or_create_monedero`, y acá el daño es el mismo tipo de
+        # silencioso: sin esta guarda, un parpadeo de red haría creer que el acumulado es cero
+        # y el segundo actor de la cadena PISARÍA el costo del primero con su propio gasto. El
+        # número quedaría más bajo que el real, con fecha de medición y todo — o sea, mintiendo
+        # con cara de medido.
+        if not lectura.ok:
+            print(f"[Costo] No se pudo leer el costo actual del trabajo {job_id}: no se escribe nada.")
+            return
+        filas = lectura.json()
+        if not filas:
+            print(f"[Costo] El trabajo {job_id} no existe: no hay dónde sumar.")
+            return
+
+        actual = filas[0].get("costo_usd")
+        # `actual` puede venir como texto: PostgREST serializa `numeric` como cadena para no
+        # perder precisión en JSON. `float(actual or 0)` cubre las tres formas —número, cadena
+        # y nulo— y `or 0` es seguro porque un costo de 0 y la ausencia dan lo mismo al sumar.
+        nuevo = actual if usd is None else float(actual or 0) + float(usd)
+
+        requests.patch(
+            f"{SUPABASE_URL}/rest/v1/{TABLA_TRABAJOS}?id=eq.{job_id}",
+            headers=get_supabase_headers(content_type=True),
+            json={
+                "costo_usd": nuevo,
+                "costo_consultado_el": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            },
+            timeout=15,
+        )
+        print(f"[Costo] Trabajo {job_id}: +{usd} USD (acumulado {nuevo}).")
+    except Exception as e:
+        # Nunca lanza: un webhook que revienta hace que Apify reintente, y el reintento volvería
+        # a procesar los leads. Perder un dato de contabilidad es mucho más barato que duplicar
+        # leads o perderlos.
+        print(f"[Costo] Excepción al registrar el costo del trabajo {job_id}: {e}")
 
 
 def increment_user_leads_count(org_id: str, leads_count: int) -> bool:
@@ -1199,6 +1297,15 @@ async def start_ad_spy(request: AdSpyRequest):
 # --- Google Places Webhook ---
 @app.post("/webhook-google-places-succeeded")
 async def handle_google_places_webhook(payload: GooglePlacesWebhookPayload, background_tasks: BackgroundTasks):
+    # El costo PRIMERO, antes de tocar los leads. Si el procesamiento de abajo falla, el gasto
+    # de Apify ya ocurrió igual y tiene que quedar registrado: un costo perdido es un margen
+    # inflado, que es peor que no tener el dato.
+    #
+    # Acá y no dentro de `update_job_results`, que es donde tienta ponerlo: esa función también
+    # se llama desde caminos donde el actor NI ARRANCÓ —el `FAILED` del arranque— y ahí no hay
+    # ningún run que cobrar.
+    add_job_cost(payload.job_id, payload.resource.usageTotalUsd)
+
     job_id = payload.job_id
     dataset_id = payload.resource.defaultDatasetId
     print(f"Webhook 1/2: Google Places terminó para Job ID: {job_id}.")
@@ -1281,6 +1388,15 @@ async def process_google_places_results(job_id: str, google_places_dataset_id: s
 # --- Website Crawler Webhook ---
 @app.post("/webhook-website-crawler-succeeded")
 async def handle_website_crawler_webhook(payload: WebsiteCrawlerWebhookPayload, background_tasks: BackgroundTasks):
+    # El costo PRIMERO, antes de tocar los leads. Si el procesamiento de abajo falla, el gasto
+    # de Apify ya ocurrió igual y tiene que quedar registrado: un costo perdido es un margen
+    # inflado, que es peor que no tener el dato.
+    #
+    # Acá y no dentro de `update_job_results`, que es donde tienta ponerlo: esa función también
+    # se llama desde caminos donde el actor NI ARRANCÓ —el `FAILED` del arranque— y ahí no hay
+    # ningún run que cobrar.
+    add_job_cost(payload.job_id, payload.resource.usageTotalUsd)
+
     print(f"Webhook 2/2: Website Crawler terminó para Job ID: {payload.job_id}.")
     background_tasks.add_task(process_final_results, payload)
     return {"status": "webhook 2 received"}
@@ -1325,6 +1441,15 @@ async def process_final_results(payload: WebsiteCrawlerWebhookPayload):
 # --- Facebook Ads Webhook ---
 @app.post("/webhook-facebook-ads-succeeded")
 async def handle_facebook_ads_webhook(payload: GooglePlacesWebhookPayload, background_tasks: BackgroundTasks):
+    # El costo PRIMERO, antes de tocar los leads. Si el procesamiento de abajo falla, el gasto
+    # de Apify ya ocurrió igual y tiene que quedar registrado: un costo perdido es un margen
+    # inflado, que es peor que no tener el dato.
+    #
+    # Acá y no dentro de `update_job_results`, que es donde tienta ponerlo: esa función también
+    # se llama desde caminos donde el actor NI ARRANCÓ —el `FAILED` del arranque— y ahí no hay
+    # ningún run que cobrar.
+    add_job_cost(payload.job_id, payload.resource.usageTotalUsd)
+
     job_id = payload.job_id
     dataset_id = payload.resource.defaultDatasetId
     print(f"Webhook: Facebook Ads terminó para Job ID: {job_id}")
@@ -1367,6 +1492,15 @@ async def process_facebook_ads_results(job_id: str, dataset_id: str):
 # --- Facebook Pages Webhook ---
 @app.post("/webhook-facebook-pages-succeeded")
 async def handle_facebook_pages_webhook(payload: GooglePlacesWebhookPayload, background_tasks: BackgroundTasks):
+    # El costo PRIMERO, antes de tocar los leads. Si el procesamiento de abajo falla, el gasto
+    # de Apify ya ocurrió igual y tiene que quedar registrado: un costo perdido es un margen
+    # inflado, que es peor que no tener el dato.
+    #
+    # Acá y no dentro de `update_job_results`, que es donde tienta ponerlo: esa función también
+    # se llama desde caminos donde el actor NI ARRANCÓ —el `FAILED` del arranque— y ahí no hay
+    # ningún run que cobrar.
+    add_job_cost(payload.job_id, payload.resource.usageTotalUsd)
+
     job_id = payload.job_id
     dataset_id = payload.resource.defaultDatasetId
     print(f"Webhook: Facebook Pages terminó para Job ID: {job_id}")
@@ -1420,6 +1554,15 @@ async def process_facebook_pages_results(job_id: str, dataset_id: str):
 # --- LinkedIn (Apollo) Webhook ---
 @app.post("/webhook-linkedin-apollo-succeeded")
 async def handle_linkedin_apollo_webhook(payload: GooglePlacesWebhookPayload, background_tasks: BackgroundTasks):
+    # El costo PRIMERO, antes de tocar los leads. Si el procesamiento de abajo falla, el gasto
+    # de Apify ya ocurrió igual y tiene que quedar registrado: un costo perdido es un margen
+    # inflado, que es peor que no tener el dato.
+    #
+    # Acá y no dentro de `update_job_results`, que es donde tienta ponerlo: esa función también
+    # se llama desde caminos donde el actor NI ARRANCÓ —el `FAILED` del arranque— y ahí no hay
+    # ningún run que cobrar.
+    add_job_cost(payload.job_id, payload.resource.usageTotalUsd)
+
     job_id = payload.job_id
     dataset_id = payload.resource.defaultDatasetId
     print(f"Webhook: LinkedIn (Apollo) terminó para Job ID: {job_id}")
@@ -1458,6 +1601,15 @@ async def process_linkedin_apollo_results(job_id: str, dataset_id: str):
 # --- Ad Spy Webhook (Meta Ad Library) ---
 @app.post("/webhook-ad-spy-succeeded")
 async def handle_ad_spy_webhook(payload: GooglePlacesWebhookPayload, background_tasks: BackgroundTasks):
+    # El costo PRIMERO, antes de tocar los leads. Si el procesamiento de abajo falla, el gasto
+    # de Apify ya ocurrió igual y tiene que quedar registrado: un costo perdido es un margen
+    # inflado, que es peor que no tener el dato.
+    #
+    # Acá y no dentro de `update_job_results`, que es donde tienta ponerlo: esa función también
+    # se llama desde caminos donde el actor NI ARRANCÓ —el `FAILED` del arranque— y ahí no hay
+    # ningún run que cobrar.
+    add_job_cost(payload.job_id, payload.resource.usageTotalUsd)
+
     job_id = payload.job_id
     dataset_id = payload.resource.defaultDatasetId
     print(f"Webhook: Ad Spy terminó para Job ID: {job_id}")
