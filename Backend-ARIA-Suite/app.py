@@ -94,9 +94,21 @@ class ScrapingRequest(BaseModel):
     getEmails: bool
     getBusinessModel: bool
     timestamp: datetime.datetime
-    cliente_id: Optional[str] = None       # identidad desde app-next (nueva llave)
-    userId: Optional[str] = None
-    correo_electronico: Optional[str] = None  # legacy (queda por compatibilidad)
+    # ── DOS IDENTIDADES MIENTRAS ARIA-brain SIGA VIVO ────────────────────────
+    #
+    # `org_id` es la nueva y la que manda ARIA-Comando-Central desde la sesión. `cliente_id` es
+    # la de ARIA-brain, que es **el hub que los alumnos usan HOY** y que no tiene noción de
+    # organización: su identidad es `aria_brain_clientes.id`.
+    #
+    # Las dos son opcionales en el modelo y obligatorias en la práctica: `resolver_org()` exige
+    # una y traduce la vieja. Ponerlas obligatorias acá habría hecho que el despliegue de este
+    # backend rompiera la Prospección de todos los alumnos de ARIA-brain — Pydantic rechaza el
+    # cuerpo antes de que ninguna lógica pueda traducir nada.
+    #
+    # Ninguna llega del navegador en ninguno de los dos hubs: las dos salen de la sesión, del
+    # lado del servidor. Ver el encabezado de los proxies.
+    org_id: Optional[str] = None
+    cliente_id: Optional[str] = None
     maxLeads: int = 100
 
 class ApifyWebhookResource(BaseModel):
@@ -114,9 +126,8 @@ class WebsiteCrawlerWebhookPayload(BaseModel):
 # -- Facebook Ads --
 class FacebookAdsScrapingRequest(BaseModel):
     url: str
+    org_id: Optional[str] = None
     cliente_id: Optional[str] = None
-    userId: Optional[str] = None
-    correo_electronico: Optional[str] = None
     timestamp: str
     scrape_url: Optional[str] = None
     link: Optional[str] = None
@@ -132,9 +143,8 @@ class FacebookPageItem(BaseModel):
 
 class FacebookPagesScrapingRequest(BaseModel):
     pages: List[FacebookPageItem]
+    org_id: Optional[str] = None
     cliente_id: Optional[str] = None
-    userId: Optional[str] = None
-    correo_electronico: Optional[str] = None
     timestamp: str
 
     def get_page_urls(self) -> List[str]:
@@ -149,9 +159,8 @@ class LinkedInScrapingRequest(BaseModel):
     country: str
     state: Optional[str] = ""
     number_of_leads: int = 100
+    org_id: Optional[str] = None
     cliente_id: Optional[str] = None
-    userId: Optional[str] = None
-    correo_electronico: Optional[str] = None
     timestamp: Optional[str] = None
 
 # -- Ad Spy (Espía de Anuncios — Meta Ad Library) --
@@ -160,8 +169,8 @@ class AdSpyRequest(BaseModel):
     country: Optional[str] = "ALL"
     source: Optional[str] = "meta"        # por ahora solo 'meta'
     count: Optional[int] = 60
-    cliente_id: Optional[str] = None       # solo identidad; NO consume saldo de leads
-    correo_electronico: Optional[str] = None
+    org_id: Optional[str] = None
+    cliente_id: Optional[str] = None                            # solo identidad; NO consume saldo de leads
 
 # -- HighLevel MCP --
 class HighLevelMCPRequest(BaseModel):
@@ -238,9 +247,40 @@ SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 apify_token = os.getenv("APIFY_API_TOKEN")
 WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL")
 
-# Leads gratis que recibe un cliente nuevo de app-next al provisionarse (primer uso).
+# Leads gratis que recibe una organización nueva al provisionarse (primer uso).
 # Se puede sobrescribir con la env var LEADS_GRATIS_NUEVO_CLIENTE.
 LEADS_GRATIS_NUEVO_CLIENTE = int(os.getenv("LEADS_GRATIS_NUEVO_CLIENTE", "100"))
+
+
+# =============================================
+# LAS TRES TABLAS, Y POR QUÉ SON CONSTANTES
+# =============================================
+# Antes estaban escritas a mano en 28 f-strings. Como constantes, cambiar de base es cambiar
+# tres líneas — y, más importante, un nombre mal escrito falla al importar el módulo en vez de
+# fallar en la petición número mil, que es cuando PostgREST contesta 404 y el scraping se cae
+# después de haber pagado la corrida de Apify.
+#
+# ── EL CAMBIO DE FONDO: LA LLAVE ES LA ORGANIZACIÓN ──────────────────────────
+#
+# Estas tablas viven en SOFIA (`pajh…`), el proyecto de ARIA-Comando-Central, y no en `urxu…`.
+# Ver `migraciones/006_aria_cc_scraper.sql`. Tres consecuencias en este archivo:
+#
+#   1. `org_id` reemplaza a `cliente_id` Y a `user_id`. El monedero ya no tiene un `id`
+#      propio: `org_id` ES su clave primaria. Se fue un nivel de indirección — antes había
+#      que leer `usuarios_scraper` para traducir `cliente_id` → `id` antes de crear un job.
+#
+#   2. **Se cayeron las identidades legacy.** `correo_electronico` y `userId` ya no son
+#      caminos posibles, y no por prolijidad: la tabla nueva NO TIENE esas columnas. Es la
+#      Fase 3 de `migracion_cliente_id.sql` ("/login y /funnel-scrape eliminados"), que dejó
+#      de ser opcional — una consulta por email contra `aria_cc_scraper_monedero` responde
+#      400 de PostgREST, no un usuario no encontrado.
+#
+#   3. Los trabajos llevan `fuente` como columna de verdad. Antes el scraper se adivinaba
+#      leyendo el prefijo de `business_type` ("LinkedIn: …", "AdSpy: …"), que es lo que el
+#      script de copia tiene que hacer para las filas viejas. Las nuevas lo declaran.
+TABLA_MONEDERO = "aria_cc_scraper_monedero"
+TABLA_TRABAJOS = "aria_cc_scraper_trabajos"
+TABLA_LEADS = "aria_cc_scraper_leads"
 
 
 # =============================================
@@ -258,10 +298,119 @@ def get_supabase_headers(content_type: bool = False, prefer_return: bool = False
     return headers
 
 
-def create_scraping_job(user_id: str, request: ScrapingRequest) -> str:
+# ── LOS WEBHOOKS NO CAMBIAN DE FORMA, Y ES A PROPÓSITO ───────────────────────
+#
+# La clave primaria del trabajo es `(org_id, id)`, así que se podría pensar que los seis
+# webhooks de Apify tienen que traer `org_id` además del `job_id`. NO hace falta, y no meterlo
+# fue deliberado:
+#
+#   · Cada webhook ya lee la fila del trabajo para saber qué hacer con ella, y esa fila TRAE
+#     `org_id`. Un campo más en el payload sería un dato duplicado que puede contradecir a la
+#     base — y ante la contradicción habría que creerle a la base igual.
+#
+#   · La búsqueda por `id` solo sigue siendo rápida: la 006 crea un índice COMÚN sobre `id`
+#     (común, no único — un único sin `org_id` filtraría la existencia de filas ajenas, y
+#     `aplicar_aislamiento` lo rechazaría).
+#
+#   · Y el modo de falla de la alternativa es peor: un webhook ya en vuelo durante el
+#     despliegue llegaría sin el campo nuevo, Pydantic lo rechazaría, y se perdería un
+#     scraping YA PAGADO.
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# EL PUENTE: `cliente_id` DE ARIA-brain → `org_id`
+# ═════════════════════════════════════════════════════════════════════════════
+# Un mapa chico (una entrada por organización vinculada) que se pide a la base y se guarda un
+# minuto. Se cachea porque lo consulta CADA petición de ARIA-brain y el mapa cambia sólo cuando
+# alguien vincula una organización nueva — pedirlo cada vez sería una consulta de más por
+# scraping, y no cachearlo nunca sería una por sondeo, que corre cada cinco segundos.
+#
+# Un minuto y no una hora: vincular una organización y que el alumno tenga que esperar a que
+# expire un caché largo es exactamente el tipo de espera que nadie relaciona con la causa.
+_PUENTE: Dict[str, str] = {}
+_PUENTE_VENCE = 0.0
+_PUENTE_TTL_S = 60
+
+
+def _puente() -> Dict[str, str]:
+    global _PUENTE, _PUENTE_VENCE
+    import time
+
+    if _PUENTE and time.time() < _PUENTE_VENCE:
+        return _PUENTE
+    try:
+        r = requests.post(
+            f"{SUPABASE_URL}/rest/v1/rpc/aria_cc_puente_scraper",
+            headers=get_supabase_headers(content_type=True),
+            json={},
+            timeout=15,
+        )
+        if r.ok:
+            _PUENTE = {str(f["cliente_id"]): f["org_id"] for f in r.json()}
+            _PUENTE_VENCE = time.time() + _PUENTE_TTL_S
+    except Exception as e:
+        # Fail-open sobre el caché viejo y NO sobre un mapa vacío: si la base parpadea, un mapa
+        # vacío convertiría todas las peticiones de ARIA-brain en "no estás vinculado", que es
+        # un mensaje FALSO y manda al alumno a pedir un vínculo que ya tiene.
+        print(f"No se pudo refrescar el puente cliente_id → org_id: {e}")
+    return _PUENTE
+
+
+def resolver_org(org_id: Optional[str], cliente_id: Optional[str]) -> str:
+    """
+    La organización de una petición, venga de cualquiera de los dos hubs.
+
+    ═══════════════════════════════════════════════════════════════════════════
+    POR QUÉ ACEPTA LA IDENTIDAD VIEJA, Y HASTA CUÁNDO
+
+    Este backend lo comparten DOS hubs:
+
+      · **ARIA-Comando-Central** manda `org_id`. Es el destino.
+      · **ARIA-brain** manda `cliente_id`, y es el hub que los alumnos usan HOY. Su proxy
+        (`app-next/app/api/scrape/route.ts`) deriva `cliente_id` del token de sesión y no
+        tiene ninguna noción de organización.
+
+    Exigir `org_id` habría dejado sin Prospección, sin Mis Leads y sin saldo a todos los
+    alumnos de ARIA-brain en el momento del despliegue. Así que se traduce.
+
+    ── LA CONSECUENCIA QUE HAY QUE DECIR EN VOZ ALTA ─────────────────────────
+
+    La traducción necesita que la organización esté vinculada al alumno del hub
+    (`organizaciones_credenciales.fundaciones_cliente_id`). **Un alumno de ARIA-brain que no
+    corresponda a ninguna organización de Comando Central no puede scrapear**, y no hay forma
+    de arreglarlo desde acá: la columna `org_id` tiene una foránea a `identidad.organizaciones`,
+    así que su monedero no se puede ni representar en el esquema nuevo.
+
+    Es el mismo freno que la migración eliminó para Comando Central, que reaparece del otro
+    lado y por el lado contrario. Se responde con un mensaje que dice qué falta en vez de un
+    500, para que se vea como lo que es: una cuenta sin organización, no una falla del motor.
+
+    Esta función se borra el día que ARIA-brain deje de llamar a este backend.
+    ═══════════════════════════════════════════════════════════════════════════
+    """
+    if org_id:
+        return org_id
+
+    if not cliente_id:
+        raise HTTPException(status_code=400, detail="Falta org_id.")
+
+    org = _puente().get(str(cliente_id))
+    if not org:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Esta cuenta todavía no está asociada a una organización, y el scraping se "
+                "cobra por organización. Avisale al equipo de ARIA para que la asocien."
+            ),
+        )
+    return org
+
+
+def create_scraping_job(org_id: str, request: ScrapingRequest) -> str:
     headers = get_supabase_headers(content_type=True, prefer_return=True)
     job_data = {
-        "user_id": user_id,
+        "org_id": org_id,
+        "fuente": "maps",
         "status": "PENDING",
         "business_type": request.businessType,
         "location": request.location,
@@ -271,7 +420,7 @@ def create_scraping_job(user_id: str, request: ScrapingRequest) -> str:
         # (el actor puede traer 1-2 de más). Se sobrescribe con los resultados finales.
         "results_data": {"max_leads": request.maxLeads},
     }
-    response = requests.post(f"{SUPABASE_URL}/rest/v1/scraping_jobs", headers=headers, json=job_data)
+    response = requests.post(f"{SUPABASE_URL}/rest/v1/{TABLA_TRABAJOS}", headers=headers, json=job_data)
     if response.status_code == 201:
         return response.json()[0]["id"]
     else:
@@ -281,7 +430,7 @@ def create_scraping_job(user_id: str, request: ScrapingRequest) -> str:
 def update_job_run_id(job_id: str, run_id: str):
     headers = get_supabase_headers(content_type=True)
     requests.patch(
-        f"{SUPABASE_URL}/rest/v1/scraping_jobs?id=eq.{job_id}",
+        f"{SUPABASE_URL}/rest/v1/{TABLA_TRABAJOS}?id=eq.{job_id}",
         headers=headers,
         json={"apify_actor_run_id": run_id, "status": "RUNNING"},
     )
@@ -296,7 +445,7 @@ def update_job_results(job_id: str, status: str, results: Optional[Dict] = None,
     if results:
         update_data["results_data"] = results
     response = requests.patch(
-        f"{SUPABASE_URL}/rest/v1/scraping_jobs?id=eq.{job_id}",
+        f"{SUPABASE_URL}/rest/v1/{TABLA_TRABAJOS}?id=eq.{job_id}",
         headers=headers,
         json=update_data,
     )
@@ -307,20 +456,26 @@ def update_job_results(job_id: str, status: str, results: Optional[Dict] = None,
         return False
 
 
-def increment_user_leads_count(user_id: str, leads_count: int) -> bool:
-    try:
-        headers = get_supabase_headers(content_type=True)
+def increment_user_leads_count(org_id: str, leads_count: int) -> bool:
+    """
+    Suma al histórico y descuenta del saldo: primero los gratuitos, después los pagados.
 
+    Ese orden es de PRODUCTO y no de implementación: al revés, los 100 leads de regalo
+    quedarían eternamente sin usar y la organización pagaría desde el primer lead.
+    """
+    try:
+        headers = get_supabase_headers()
         response = requests.get(
-            f"{SUPABASE_URL}/rest/v1/usuarios_scraper?id=eq.{user_id}&select=numero_leads_scrapeados,leads_base_gratuitos,leads_adicionales_pagados",
+            f"{SUPABASE_URL}/rest/v1/{TABLA_MONEDERO}?org_id=eq.{org_id}"
+            "&select=numero_leads_scrapeados,leads_base_gratuitos,leads_adicionales_pagados",
             headers=headers,
         )
-
-        if not response.json():
-            print(f"No se encontró el usuario {user_id}")
+        filas = response.json() if response.ok else []
+        if not filas:
+            print(f"No hay monedero para la organización {org_id}: no se descuenta nada.")
             return False
+        user_data = filas[0]
 
-        user_data = response.json()[0]
         current_leads_scrapeados = user_data.get("numero_leads_scrapeados", 0) or 0
         current_leads_gratuitos = user_data.get("leads_base_gratuitos", 0) or 0
         current_leads_pagados = user_data.get("leads_adicionales_pagados", 0) or 0
@@ -346,34 +501,35 @@ def increment_user_leads_count(user_id: str, leads_count: int) -> bool:
             "numero_leads_scrapeados": new_leads_scrapeados,
             "leads_base_gratuitos": new_leads_gratuitos,
             "leads_adicionales_pagados": new_leads_pagados,
+            "actualizado_el": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
 
         update_response = requests.patch(
-            f"{SUPABASE_URL}/rest/v1/usuarios_scraper?id=eq.{user_id}",
-            headers=headers,
+            f"{SUPABASE_URL}/rest/v1/{TABLA_MONEDERO}?org_id=eq.{org_id}",
+            headers=get_supabase_headers(content_type=True),
             json=update_data,
         )
 
         if update_response.status_code in [200, 204]:
-            print(f"Leads actualizados para usuario {user_id}: scrapeados {current_leads_scrapeados} -> {new_leads_scrapeados} (+{leads_count})")
+            print(f"Leads actualizados para la organización {org_id}: scrapeados {current_leads_scrapeados} -> {new_leads_scrapeados} (+{leads_count})")
             return True
         else:
             print(f"Error al actualizar leads: {update_response.status_code}, {update_response.text}")
             return False
 
     except Exception as e:
-        print(f"Excepción al actualizar leads para usuario {user_id}: {e}")
+        print(f"Excepción al actualizar leads de la organización {org_id}: {e}")
         return False
 
 
-def save_leads_to_table(user_id: str, job_id: str, source: str, leads: List[Dict[str, Any]]):
-    """Guarda los leads en la tabla aria_suite_leads_per_user."""
+def save_leads_to_table(org_id: str, job_id: str, source: str, leads: List[Dict[str, Any]]):
+    """Guarda los leads en aria_cc_scraper_leads, atados a la organización y al trabajo."""
     headers = get_supabase_headers(content_type=True)
     rows = []
     for lead in leads:
         row = {
-            "user_id": user_id,
-            "job_id": job_id,
+            "org_id": org_id,
+            "trabajo_id": job_id,
             "source": source,
             "name": lead.get("title") or lead.get("page_name") or lead.get("pageName") or lead.get("fullName") or "",
             "email": lead.get("email") or "",
@@ -392,75 +548,84 @@ def save_leads_to_table(user_id: str, job_id: str, source: str, leads: List[Dict
     for i in range(0, len(rows), 50):
         batch = rows[i:i + 50]
         response = requests.post(
-            f"{SUPABASE_URL}/rest/v1/aria_suite_leads_per_user",
+            f"{SUPABASE_URL}/rest/v1/{TABLA_LEADS}",
             headers=headers,
             json=batch,
         )
         if response.status_code in [200, 201]:
-            print(f"Guardados {len(batch)} leads en aria_suite_leads_per_user (job {job_id})")
+            print(f"Guardados {len(batch)} leads en {TABLA_LEADS} (trabajo {job_id})")
         else:
             print(f"Error guardando leads: {response.status_code} - {response.text}")
 
 
-def get_or_create_user_by_cliente(cliente_id: str) -> dict:
-    """Busca el monedero (usuarios_scraper) de un cliente de app-next por su cliente_id.
-    Si no existe, lo provisiona automáticamente con leads gratis (primer uso).
-    El id interno (usuarios_scraper.id) sigue siendo la FK de jobs y leads."""
+def get_or_create_monedero(org_id: str) -> dict:
+    """
+    El monedero de una organización. Si no existe, lo abre con los leads de regalo.
+
+    ═══════════════════════════════════════════════════════════════════════════
+    LA AUTO-PROVISIÓN ES LO QUE HACE QUE ESTO FUNCIONE "A NIVEL DE EMPRESA"
+
+    Antes esta función buscaba por `cliente_id`, un identificador del hub que alguien tenía
+    que haber vinculado a mano con SQL (`temporal_2_vincular.sql`). Sin ese vínculo el
+    alumno veía "sin_alumno_vinculado" y no podía scrapear.
+
+    Ahora la llave es `org_id`, que TODA organización tiene por existir. Un cliente High
+    Ticket que nazca por Walter abre su monedero en su primer scraping, solo, sin que nadie
+    corra nada. Ese es el cambio, y no es de prolijidad: es la diferencia entre "hay que
+    acordarse de vincular a cada cliente nuevo" y "funciona".
+    ═══════════════════════════════════════════════════════════════════════════
+    """
     headers = get_supabase_headers()
     response = requests.get(
-        f"{SUPABASE_URL}/rest/v1/usuarios_scraper?cliente_id=eq.{cliente_id}&select=*",
+        f"{SUPABASE_URL}/rest/v1/{TABLA_MONEDERO}?org_id=eq.{org_id}&select=*",
         headers=headers,
     )
-    if response.json():
+    if response.ok and response.json():
         return response.json()[0]
 
-    # Auto-provisión: primer uso de este cliente. No se escribe leads_disponibles_en_total
-    # (es columna generada = base_gratuitos + adicionales_pagados).
+    # Primer uso de esta organización. No se escribe `leads_disponibles_en_total`: es columna
+    # generada en el destino (base_gratuitos + adicionales_pagados).
     create_headers = get_supabase_headers(content_type=True, prefer_return=True)
     nuevo = {
-        "cliente_id": cliente_id,
+        "org_id": org_id,
         "numero_leads_scrapeados": 0,
         "leads_base_gratuitos": LEADS_GRATIS_NUEVO_CLIENTE,
         "leads_adicionales_pagados": 0,
     }
     create_resp = requests.post(
-        f"{SUPABASE_URL}/rest/v1/usuarios_scraper",
-        headers=create_headers,
+        f"{SUPABASE_URL}/rest/v1/{TABLA_MONEDERO}?on_conflict=org_id",
+        headers={**create_headers, "Prefer": "resolution=merge-duplicates,return=representation"},
         json=nuevo,
     )
     if create_resp.status_code not in [200, 201] or not create_resp.json():
+        # El fallo más probable acá es una foránea: `org_id` tiene que nombrar una fila de
+        # `identidad.organizaciones`. Si el hub mandó un identificador que no existe, esto
+        # es un 409 de PostgREST y NO hay que tratarlo como "no se pudo provisionar" a secas.
+        print(f"[Provisión] Falló para {org_id}: {create_resp.status_code} {create_resp.text}")
         raise HTTPException(status_code=500, detail="No se pudo provisionar la cuenta de scraping.")
-    print(f"[Provisión] Cliente {cliente_id} creado con {LEADS_GRATIS_NUEVO_CLIENTE} leads gratis.")
+    print(f"[Provisión] Organización {org_id} abierta con {LEADS_GRATIS_NUEVO_CLIENTE} leads gratis.")
     return create_resp.json()[0]
 
 
-def validate_user_and_leads(cliente_id: str = None, user_id: str = None, email: str = None) -> dict:
-    """Valida que el usuario exista y tenga leads disponibles. Retorna datos del usuario.
-    Prioridad de identidad: cliente_id (app-next, con auto-provisión) > user_id > email (legacy)."""
-    headers = get_supabase_headers()
+def validate_user_and_leads(org_id: str) -> dict:
+    """
+    Que la organización tenga monedero (lo abre si no) y saldo. Devuelve el monedero.
 
-    usuario = None
-    if cliente_id:
-        usuario = get_or_create_user_by_cliente(cliente_id)
+    Ya no hay prioridad de identidades: `org_id` es la única. Los caminos por `userId` y por
+    `correo_electronico` NO se quitaron por prolijidad — la tabla nueva no tiene esas
+    columnas, así que una consulta por email responde 400 de PostgREST. Es la Fase 3 de
+    `migracion_cliente_id.sql`, que dejó de ser opcional.
+    """
+    if not org_id:
+        raise HTTPException(status_code=400, detail="Falta org_id.")
 
-    if not usuario and user_id:
-        response = requests.get(f"{SUPABASE_URL}/rest/v1/usuarios_scraper?id=eq.{user_id}&select=*", headers=headers)
-        if response.json():
-            usuario = response.json()[0]
+    monedero = get_or_create_monedero(org_id)
 
-    if not usuario and email:
-        response = requests.get(f"{SUPABASE_URL}/rest/v1/usuarios_scraper?correo_electronico=eq.{email}&select=*", headers=headers)
-        if response.json():
-            usuario = response.json()[0]
-
-    if not usuario:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
-
-    leads_disponibles = usuario.get("leads_disponibles_en_total", 0) or 0
+    leads_disponibles = monedero.get("leads_disponibles_en_total", 0) or 0
     if leads_disponibles <= 0:
         raise HTTPException(status_code=403, detail="No tienes leads disponibles. Por favor, adquiere más leads para continuar.")
 
-    return usuario
+    return monedero
 
 
 # =============================================
@@ -485,71 +650,42 @@ async def root():
             "send_email_highlevel": "POST /send-email-highlevel",
             "send_whatsapp_highlevel": "POST /send-whatsapp-highlevel",
             "highlevel_mcp": "POST /highlevel-mcp",
-            "user_leads": "GET /user-leads?cliente_id=",
-            "mis_leads": "GET /mis-leads?cliente_id=",
-            "job_status": "GET /job/{job_id}",
-            "cancel_job": "POST /cancel-job/{job_id}",
+            "user_leads": "GET /user-leads?org_id=  (o cliente_id=, legacy ARIA-brain)",
+            "mis_leads": "GET /mis-leads?org_id=  (o cliente_id=, legacy ARIA-brain)",
+            "job_status": "GET /job/{job_id}?org_id=",
+            "cancel_job": "POST /cancel-job/{job_id}?org_id=",
         },
     }
 
 
 # --- User Leads (para sidebar) ---
 @app.get("/user-leads")
-async def get_user_leads(cliente_id: str = None, email: str = None):
-    # Con cliente_id (app-next) se auto-provisiona la cuenta al consultar el saldo,
-    # así el monedero existe desde que el alumno abre el panel de Prospección.
-    if cliente_id:
-        usuario = get_or_create_user_by_cliente(cliente_id)
-        return {
-            "numero_leads_scrapeados": usuario.get("numero_leads_scrapeados", 0),
-            "leads_disponibles_en_total": usuario.get("leads_disponibles_en_total", 0),
-        }
-
-    if not email:
-        raise HTTPException(status_code=400, detail="Falta cliente_id o email.")
-
-    headers = get_supabase_headers()
-    response = requests.get(
-        f"{SUPABASE_URL}/rest/v1/usuarios_scraper?correo_electronico=eq.{email}&select=numero_leads_scrapeados,leads_disponibles_en_total",
-        headers=headers,
-    )
-    if not response.json():
-        raise HTTPException(status_code=404, detail="Usuario no encontrado.")
-    usuario = response.json()[0]
+async def get_user_leads(org_id: str = None, cliente_id: str = None):
+    # Se auto-provisiona al consultar el saldo, así el monedero existe desde que alguien
+    # abre el panel de Prospección — antes de gastar nada.
+    monedero = get_or_create_monedero(resolver_org(org_id, cliente_id))
     return {
-        "numero_leads_scrapeados": usuario.get("numero_leads_scrapeados", 0),
-        "leads_disponibles_en_total": usuario.get("leads_disponibles_en_total", 0),
+        "numero_leads_scrapeados": monedero.get("numero_leads_scrapeados", 0),
+        "leads_disponibles_en_total": monedero.get("leads_disponibles_en_total", 0),
     }
 
 
-# --- Mis Leads (tabla aria_suite_leads_per_user) ---
+# --- Mis Leads (tabla aria_cc_scraper_leads) ---
+#
+# Antes esto hacía DOS consultas: una a `usuarios_scraper` para traducir la identidad al `id`
+# interno del monedero, y otra a los leads. Con `org_id` directamente en la tabla de leads la
+# primera desaparece — es el nivel de indirección que se fue con la migración.
 @app.get("/mis-leads")
-async def get_mis_leads(cliente_id: str = None, email: str = None):
-    headers = get_supabase_headers()
+async def get_mis_leads(org_id: str = None, cliente_id: str = None, limite: int = 1000):
+    org_id = resolver_org(org_id, cliente_id)
 
-    # Obtener user_id por cliente_id (app-next) o por email (legacy)
-    if cliente_id:
-        filtro = f"cliente_id=eq.{cliente_id}"
-    elif email:
-        filtro = f"correo_electronico=eq.{email}"
-    else:
-        raise HTTPException(status_code=400, detail="Falta cliente_id o email.")
-
-    user_response = requests.get(
-        f"{SUPABASE_URL}/rest/v1/usuarios_scraper?{filtro}&select=id",
-        headers=headers,
-    )
-    if not user_response.json():
-        # Cuenta aún sin provisionar (no ha scrapeado todavía) → sin leads.
-        return []
-    user_id = user_response.json()[0]["id"]
-
-    # Obtener leads
     leads_response = requests.get(
-        f"{SUPABASE_URL}/rest/v1/aria_suite_leads_per_user?user_id=eq.{user_id}&select=id,source,name,email,phone,website,location,category,raw_data,created_at&order=created_at.desc",
-        headers=headers,
+        f"{SUPABASE_URL}/rest/v1/{TABLA_LEADS}?org_id=eq.{org_id}"
+        "&select=id,source,name,email,phone,website,location,category,raw_data,created_at"
+        f"&order=created_at.desc&limit={min(limite, 5000)}",
+        headers=get_supabase_headers(),
     )
-    return leads_response.json()
+    return leads_response.json() if leads_response.ok else []
 
 
 # --- Onboarding Chat (Agente IA) ---
@@ -577,7 +713,8 @@ async def start_scraping_job(request: ScrapingRequest):
             detail="La localización debe tener al menos 3 partes separadas por coma. Ej: 'Cayma, Arequipa, Perú' (distrito, ciudad, país).",
         )
 
-    usuario = validate_user_and_leads(cliente_id=request.cliente_id, email=request.correo_electronico)
+    org_id = resolver_org(request.org_id, request.cliente_id)
+    usuario = validate_user_and_leads(org_id)
     leads_disponibles = usuario.get("leads_disponibles_en_total", 0) or 0
 
     # El pedido debe estar entre el mínimo del actor (~72 con emails) y el saldo.
@@ -592,7 +729,7 @@ async def start_scraping_job(request: ScrapingRequest):
     if request.maxLeads > leads_disponibles:
         raise HTTPException(status_code=400, detail=f"Solo tienes {leads_disponibles} leads disponibles.")
 
-    job_id = create_scraping_job(usuario.get("id"), request)
+    job_id = create_scraping_job(org_id, request)
 
     try:
         run_id = google_maps_scraper.start_google_maps_scrape(
@@ -613,9 +750,14 @@ async def start_scraping_job(request: ScrapingRequest):
 
 # --- Job Status ---
 @app.get("/job/{job_id}")
-async def get_job_status_and_results(job_id: str):
+async def get_job_status_and_results(job_id: str, org_id: str = None, cliente_id: str = None):
+    org_id = resolver_org(org_id, cliente_id)
     headers = get_supabase_headers()
-    response = requests.get(f"{SUPABASE_URL}/rest/v1/scraping_jobs?id=eq.{job_id}&select=status,results_data", headers=headers)
+    response = requests.get(
+        f"{SUPABASE_URL}/rest/v1/{TABLA_TRABAJOS}?org_id=eq.{org_id}&id=eq.{job_id}"
+        "&select=status,results_data",
+        headers=headers,
+    )
     if not response.json():
         raise HTTPException(status_code=404, detail="Trabajo no encontrado.")
     job_data = response.json()[0]
@@ -627,11 +769,13 @@ async def get_job_status_and_results(job_id: str):
 
 # --- Cancel Job ---
 @app.post("/cancel-job/{job_id}")
-async def cancel_scraping_job(job_id: str):
+async def cancel_scraping_job(job_id: str, org_id: str = None, cliente_id: str = None):
+    org_id = resolver_org(org_id, cliente_id)
     try:
         headers = get_supabase_headers()
         response = requests.get(
-            f"{SUPABASE_URL}/rest/v1/scraping_jobs?id=eq.{job_id}&select=apify_actor_run_id,status",
+            f"{SUPABASE_URL}/rest/v1/{TABLA_TRABAJOS}?org_id=eq.{org_id}&id=eq.{job_id}"
+            "&select=apify_actor_run_id,status",
             headers=headers,
         )
         if not response.json():
@@ -790,12 +934,13 @@ async def start_facebook_ads_scraping(request: FacebookAdsScrapingRequest):
         if not scrape_url:
             raise HTTPException(status_code=400, detail="Falta la URL de Facebook Ads.")
 
-        usuario = validate_user_and_leads(cliente_id=request.cliente_id, user_id=request.userId, email=request.correo_electronico)
-        user_id = usuario.get("id")
+        org_id = resolver_org(request.org_id, request.cliente_id)
+        validate_user_and_leads(org_id)
 
         job_headers = get_supabase_headers(content_type=True, prefer_return=True)
         job_data = {
-            "user_id": user_id,
+            "org_id": org_id,
+            "fuente": "facebook-ads",
             "status": "PENDING",
             "business_type": "Facebook Ads",
             "location": scrape_url,
@@ -804,7 +949,7 @@ async def start_facebook_ads_scraping(request: FacebookAdsScrapingRequest):
             "created_at": request.timestamp,
         }
 
-        job_response = requests.post(f"{SUPABASE_URL}/rest/v1/scraping_jobs", headers=job_headers, json=job_data)
+        job_response = requests.post(f"{SUPABASE_URL}/rest/v1/{TABLA_TRABAJOS}", headers=job_headers, json=job_data)
         if job_response.status_code != 201:
             raise HTTPException(status_code=500, detail="No se pudo registrar el trabajo.")
 
@@ -849,12 +994,13 @@ async def start_facebook_pages_scraping(request: FacebookPagesScrapingRequest):
         original_pages_data = unique_pages_data
         page_urls = [page.get("page_profile_uri") for page in unique_pages_data]
 
-        usuario = validate_user_and_leads(cliente_id=request.cliente_id, user_id=request.userId, email=request.correo_electronico)
-        user_id = usuario.get("id")
+        org_id = resolver_org(request.org_id, request.cliente_id)
+        validate_user_and_leads(org_id)
 
         job_headers = get_supabase_headers(content_type=True, prefer_return=True)
         job_data = {
-            "user_id": user_id,
+            "org_id": org_id,
+            "fuente": "facebook-pages",
             "status": "PENDING",
             "business_type": "Facebook Pages (Bulk)",
             "location": f"{len(page_urls)} páginas",
@@ -864,7 +1010,7 @@ async def start_facebook_pages_scraping(request: FacebookPagesScrapingRequest):
             "results_data": {"original_pages": original_pages_data},
         }
 
-        job_response = requests.post(f"{SUPABASE_URL}/rest/v1/scraping_jobs", headers=job_headers, json=job_data)
+        job_response = requests.post(f"{SUPABASE_URL}/rest/v1/{TABLA_TRABAJOS}", headers=job_headers, json=job_data)
         if job_response.status_code != 201:
             raise HTTPException(status_code=500, detail="No se pudo registrar el trabajo.")
 
@@ -904,20 +1050,21 @@ async def start_linkedin_scraping(request: LinkedInScrapingRequest):
     if request.number_of_leads < 100 or request.number_of_leads > 30000:
         raise HTTPException(status_code=400, detail="number_of_leads debe estar entre 100 y 30000.")
 
-    usuario = validate_user_and_leads(cliente_id=request.cliente_id, user_id=request.userId, email=request.correo_electronico)
-    user_id = usuario.get("id")
+    org_id = resolver_org(request.org_id, request.cliente_id)
+    validate_user_and_leads(org_id)
 
     headers = get_supabase_headers(content_type=True, prefer_return=True)
     location_str = f"{request.state}, {request.country}".strip(", ") if request.state else request.country
     job_data = {
-        "user_id": user_id,
+        "org_id": org_id,
+        "fuente": "linkedin",
         "status": "PENDING",
         "business_type": f"LinkedIn: {request.job_title}",
         "location": location_str,
         "get_emails": True,
         "get_business_model": False,
     }
-    job_response = requests.post(f"{SUPABASE_URL}/rest/v1/scraping_jobs", headers=headers, json=job_data)
+    job_response = requests.post(f"{SUPABASE_URL}/rest/v1/{TABLA_TRABAJOS}", headers=headers, json=job_data)
     if job_response.status_code not in [200, 201]:
         raise HTTPException(status_code=500, detail="No se pudo registrar el trabajo de LinkedIn.")
     job_id = job_response.json()[0]["id"]
@@ -953,24 +1100,23 @@ async def start_ad_spy(request: AdSpyRequest):
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="Escribe un nicho, marca o página a espiar.")
 
-    # scraping_jobs.user_id es NOT NULL. Resolvemos el monedero del cliente (por cliente_id)
-    # y usamos su id — pero NO se descuenta saldo (Ad Spy es investigación, no genera leads).
-    if not request.cliente_id:
-        raise HTTPException(status_code=400, detail="Falta cliente_id.")
-    usuario = get_or_create_user_by_cliente(request.cliente_id)
-    user_id = usuario.get("id")
+    # `org_id` es obligatorio, pero NO se valida saldo: Ad Spy es investigación y no genera
+    # leads. Se abre el monedero igual —así la organización queda provisionada— y nada más.
+    org_id = resolver_org(request.org_id, request.cliente_id)
+    get_or_create_monedero(org_id)
 
-    # Crea un job (misma tabla scraping_jobs), marcado como AdSpy. Sin validar saldo.
+    # Crea un trabajo en la misma tabla, marcado como Ad Spy. Sin validar saldo.
     headers = get_supabase_headers(content_type=True, prefer_return=True)
     job_data = {
-        "user_id": user_id,
+        "org_id": org_id,
+        "fuente": "ad-spy",
         "status": "PENDING",
         "business_type": f"AdSpy: {request.query.strip()}",
         "location": (request.country or "ALL"),
         "get_emails": False,
         "get_business_model": False,
     }
-    job_response = requests.post(f"{SUPABASE_URL}/rest/v1/scraping_jobs", headers=headers, json=job_data)
+    job_response = requests.post(f"{SUPABASE_URL}/rest/v1/{TABLA_TRABAJOS}", headers=headers, json=job_data)
     if job_response.status_code not in [200, 201]:
         raise HTTPException(status_code=500, detail="No se pudo registrar el trabajo de Ad Spy.")
     job_id = job_response.json()[0]["id"]
@@ -1009,7 +1155,7 @@ async def process_google_places_results(job_id: str, google_places_dataset_id: s
     try:
         headers = get_supabase_headers()
         job_response = requests.get(
-            f"{SUPABASE_URL}/rest/v1/scraping_jobs?id=eq.{job_id}&select=*,usuarios_scraper(correo_electronico)",
+            f"{SUPABASE_URL}/rest/v1/{TABLA_TRABAJOS}?id=eq.{job_id}&select=*",
             headers=headers,
         )
         if not job_response.json():
@@ -1036,10 +1182,10 @@ async def process_google_places_results(job_id: str, google_places_dataset_id: s
             final_json_output = {"data": final_leads, "results_count": len(final_leads)}
             update_job_results(job_id, "COMPLETED", results=final_json_output)
 
-            user_id = job_details.get("user_id")
-            if user_id:
-                increment_user_leads_count(user_id, len(final_leads))
-                save_leads_to_table(user_id, job_id, "maps", final_leads)
+            org_id = job_details.get("org_id")
+            if org_id:
+                increment_user_leads_count(org_id, len(final_leads))
+                save_leads_to_table(org_id, job_id, "maps", final_leads)
 
             print(f"Trabajo {job_id} completado (solo Google Places).")
             return
@@ -1057,10 +1203,10 @@ async def process_google_places_results(job_id: str, google_places_dataset_id: s
                 final_leads = final_leads[:max_leads]
             final_json_output = {"data": final_leads, "results_count": len(final_leads)}
             update_job_results(job_id, "COMPLETED", results=final_json_output)
-            user_id = job_details.get("user_id")
-            if user_id:
-                increment_user_leads_count(user_id, len(final_leads))
-                save_leads_to_table(user_id, job_id, "maps", final_leads)
+            org_id = job_details.get("org_id")
+            if org_id:
+                increment_user_leads_count(org_id, len(final_leads))
+                save_leads_to_table(org_id, job_id, "maps", final_leads)
             return
 
         google_maps_scraper.start_website_crawler(
@@ -1093,7 +1239,7 @@ async def process_final_results(payload: WebsiteCrawlerWebhookPayload):
     try:
         headers = get_supabase_headers()
         job_response = requests.get(
-            f"{SUPABASE_URL}/rest/v1/scraping_jobs?id=eq.{job_id}&select=*,usuarios_scraper(correo_electronico)",
+            f"{SUPABASE_URL}/rest/v1/{TABLA_TRABAJOS}?id=eq.{job_id}&select=*",
             headers=headers,
         )
         if not job_response.json():
@@ -1109,10 +1255,10 @@ async def process_final_results(payload: WebsiteCrawlerWebhookPayload):
 
         update_job_results(job_id, "COMPLETED", results=final_json_output)
 
-        user_id = job_details.get("user_id")
-        if user_id:
-            increment_user_leads_count(user_id, len(final_leads))
-            save_leads_to_table(user_id, job_id, "maps", final_leads)
+        org_id = job_details.get("org_id")
+        if org_id:
+            increment_user_leads_count(org_id, len(final_leads))
+            save_leads_to_table(org_id, job_id, "maps", final_leads)
 
         print(f"Trabajo {job_id} completado y resultados guardados exitosamente.")
 
@@ -1135,10 +1281,10 @@ async def process_facebook_ads_results(job_id: str, dataset_id: str):
     try:
         headers = get_supabase_headers()
         job_response = requests.get(
-            f"{SUPABASE_URL}/rest/v1/scraping_jobs?id=eq.{job_id}&select=user_id",
+            f"{SUPABASE_URL}/rest/v1/{TABLA_TRABAJOS}?id=eq.{job_id}&select=org_id",
             headers=headers,
         )
-        user_id = job_response.json()[0].get("user_id") if job_response.json() else None
+        org_id = job_response.json()[0].get("org_id") if job_response.json() else None
 
         client = ApifyClient(apify_token)
         dataset_items = client.dataset(dataset_id).list_items().items
@@ -1153,8 +1299,8 @@ async def process_facebook_ads_results(job_id: str, dataset_id: str):
         final_json_output = {"data": normalized_data, "results_count": len(normalized_data)}
         update_job_results(job_id, "COMPLETED", results=final_json_output)
 
-        if user_id:
-            save_leads_to_table(user_id, job_id, "facebook", normalized_data)
+        if org_id:
+            save_leads_to_table(org_id, job_id, "facebook", normalized_data)
 
         print(f"Facebook Ads scraping {job_id} completado. {len(normalized_data)} anuncios extraídos.")
 
@@ -1177,7 +1323,7 @@ async def process_facebook_pages_results(job_id: str, dataset_id: str):
     try:
         headers = get_supabase_headers()
         job_response = requests.get(
-            f"{SUPABASE_URL}/rest/v1/scraping_jobs?id=eq.{job_id}&select=user_id,results_data",
+            f"{SUPABASE_URL}/rest/v1/{TABLA_TRABAJOS}?id=eq.{job_id}&select=org_id,results_data",
             headers=headers,
         )
 
@@ -1185,7 +1331,7 @@ async def process_facebook_pages_results(job_id: str, dataset_id: str):
             raise Exception("No se pudo recuperar el job de la base de datos")
 
         job_data = job_response.json()[0]
-        user_id = job_data.get("user_id")
+        org_id = job_data.get("org_id")
         original_pages = job_data.get("results_data", {}).get("original_pages", [])
 
         client = ApifyClient(apify_token)
@@ -1205,9 +1351,9 @@ async def process_facebook_pages_results(job_id: str, dataset_id: str):
         final_json_output = {"data": matched_results, "results_count": len(matched_results)}
         update_job_results(job_id, "COMPLETED", results=final_json_output)
 
-        if user_id:
-            increment_user_leads_count(user_id, len(matched_results))
-            save_leads_to_table(user_id, job_id, "facebook", matched_results)
+        if org_id:
+            increment_user_leads_count(org_id, len(matched_results))
+            save_leads_to_table(org_id, job_id, "facebook", matched_results)
 
         print(f"Facebook Pages scraping {job_id} completado. {len(matched_results)} páginas extraídas.")
 
@@ -1230,22 +1376,22 @@ async def process_linkedin_apollo_results(job_id: str, dataset_id: str):
     try:
         headers = get_supabase_headers()
         job_response = requests.get(
-            f"{SUPABASE_URL}/rest/v1/scraping_jobs?id=eq.{job_id}&select=user_id",
+            f"{SUPABASE_URL}/rest/v1/{TABLA_TRABAJOS}?id=eq.{job_id}&select=org_id",
             headers=headers,
         )
         if not job_response.json():
             raise Exception("Job no encontrado")
 
-        user_id = job_response.json()[0].get("user_id")
+        org_id = job_response.json()[0].get("org_id")
 
         items = linkedin_apollo_scraper.get_dataset_items(dataset_id)
         final_leads = linkedin_apollo_scraper.build_final_leads(items)
         final_json_output = {"data": final_leads, "results_count": len(final_leads)}
         update_job_results(job_id, "COMPLETED", results=final_json_output)
 
-        if user_id:
-            increment_user_leads_count(user_id, len(final_leads))
-            save_leads_to_table(user_id, job_id, "linkedin", final_leads)
+        if org_id:
+            increment_user_leads_count(org_id, len(final_leads))
+            save_leads_to_table(org_id, job_id, "linkedin", final_leads)
 
         print(f"LinkedIn (Apollo) {job_id} completado. {len(final_leads)} leads guardados.")
 
@@ -1266,7 +1412,7 @@ async def handle_ad_spy_webhook(payload: GooglePlacesWebhookPayload, background_
 
 async def process_ad_spy_results(job_id: str, dataset_id: str):
     """Procesa los anuncios espiados y los guarda en results_data del job.
-    NO guarda en aria_suite_leads_per_user ni descuenta saldo (es investigación)."""
+    NO guarda en aria_cc_scraper_leads ni descuenta saldo (es investigación)."""
     try:
         dataset_items = ad_spy_scraper.get_dataset_items(dataset_id)
         if dataset_items and isinstance(dataset_items[0], dict) and "error" in dataset_items[0] and len(dataset_items[0]) == 1:
