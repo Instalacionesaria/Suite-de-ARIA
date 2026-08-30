@@ -467,7 +467,7 @@ def increment_user_leads_count(org_id: str, leads_count: int) -> bool:
         headers = get_supabase_headers()
         response = requests.get(
             f"{SUPABASE_URL}/rest/v1/{TABLA_MONEDERO}?org_id=eq.{org_id}"
-            "&select=numero_leads_scrapeados,leads_base_gratuitos,leads_adicionales_pagados",
+            "&select=numero_leads_scrapeados,leads_base_gratuitos,leads_adicionales_pagados,sin_limite",
             headers=headers,
         )
         filas = response.json() if response.ok else []
@@ -477,6 +477,24 @@ def increment_user_leads_count(org_id: str, leads_count: int) -> bool:
         user_data = filas[0]
 
         current_leads_scrapeados = user_data.get("numero_leads_scrapeados", 0) or 0
+
+        # ── SIN TOPE: se cuenta, pero no se cobra ────────────────────────────
+        #
+        # Es ARIA, la dueña del software. El histórico SÍ sube y eso es deliberado: Apify nos
+        # cobra igual, y `numero_leads_scrapeados` es la única forma de ver ese gasto. Lo que
+        # no se toca es el saldo. Ver `migraciones/008_aria_scraper_sin_limite.sql`.
+        if user_data.get("sin_limite"):
+            r = requests.patch(
+                f"{SUPABASE_URL}/rest/v1/{TABLA_MONEDERO}?org_id=eq.{org_id}",
+                headers=get_supabase_headers(content_type=True),
+                json={
+                    "numero_leads_scrapeados": current_leads_scrapeados + leads_count,
+                    "actualizado_el": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                },
+            )
+            print(f"Organización {org_id} sin tope: +{leads_count} al histórico, sin descontar.")
+            return r.status_code in [200, 204]
+
         current_leads_gratuitos = user_data.get("leads_base_gratuitos", 0) or 0
         current_leads_pagados = user_data.get("leads_adicionales_pagados", 0) or 0
 
@@ -576,16 +594,27 @@ def get_or_create_monedero(org_id: str) -> dict:
     ═══════════════════════════════════════════════════════════════════════════
     """
     headers = get_supabase_headers()
-    response = requests.get(
-        f"{SUPABASE_URL}/rest/v1/{TABLA_MONEDERO}?org_id=eq.{org_id}&select=*",
-        headers=headers,
-    )
-    if response.ok and response.json():
+    ruta = f"{SUPABASE_URL}/rest/v1/{TABLA_MONEDERO}?org_id=eq.{org_id}&select=*"
+    response = requests.get(ruta, headers=headers)
+
+    # ── SI LA LECTURA FALLA, SE CORTA. NO SE SIGUE A CREAR ────────────────────
+    #
+    # Esta guarda no es defensiva por costumbre: sin ella, un parpadeo de red convierte "no
+    # pude leer el monedero" en "esta organización no tiene monedero", y el camino de abajo lo
+    # CREA — pisando el saldo y el histórico reales con los valores de una cuenta nueva.
+    # Un 502 que se reintenta es infinitamente mejor que un saldo borrado en silencio.
+    if not response.ok:
+        raise HTTPException(status_code=502, detail="No se pudo leer el saldo de leads.")
+    if response.json():
         return response.json()[0]
 
     # Primer uso de esta organización. No se escribe `leads_disponibles_en_total`: es columna
     # generada en el destino (base_gratuitos + adicionales_pagados).
-    create_headers = get_supabase_headers(content_type=True, prefer_return=True)
+    #
+    # `ignore-duplicates` y NO `merge-duplicates`: si dos peticiones de la misma organización
+    # llegan juntas —el panel pide el saldo mientras el alumno ya apretó scrapear— las dos ven
+    # el monedero vacío y las dos insertan. Con `merge` la segunda PISA a la primera y devuelve
+    # el saldo a 100. Con `ignore` no entra, no devuelve fila, y se relee abajo.
     nuevo = {
         "org_id": org_id,
         "numero_leads_scrapeados": 0,
@@ -594,17 +623,29 @@ def get_or_create_monedero(org_id: str) -> dict:
     }
     create_resp = requests.post(
         f"{SUPABASE_URL}/rest/v1/{TABLA_MONEDERO}?on_conflict=org_id",
-        headers={**create_headers, "Prefer": "resolution=merge-duplicates,return=representation"},
+        headers={
+            **get_supabase_headers(content_type=True),
+            "Prefer": "resolution=ignore-duplicates,return=representation",
+        },
         json=nuevo,
     )
-    if create_resp.status_code not in [200, 201] or not create_resp.json():
-        # El fallo más probable acá es una foránea: `org_id` tiene que nombrar una fila de
-        # `identidad.organizaciones`. Si el hub mandó un identificador que no existe, esto
-        # es un 409 de PostgREST y NO hay que tratarlo como "no se pudo provisionar" a secas.
-        print(f"[Provisión] Falló para {org_id}: {create_resp.status_code} {create_resp.text}")
-        raise HTTPException(status_code=500, detail="No se pudo provisionar la cuenta de scraping.")
-    print(f"[Provisión] Organización {org_id} abierta con {LEADS_GRATIS_NUEVO_CLIENTE} leads gratis.")
-    return create_resp.json()[0]
+
+    if create_resp.status_code in [200, 201] and create_resp.json():
+        print(f"[Provisión] Organización {org_id} abierta con {LEADS_GRATIS_NUEVO_CLIENTE} leads gratis.")
+        return create_resp.json()[0]
+
+    # Sin fila devuelta hay dos casos, y se distinguen releyendo: o ganó la carrera otra
+    # petición (existe, y es la buena), o el insert falló de verdad.
+    relectura = requests.get(ruta, headers=headers)
+    if relectura.ok and relectura.json():
+        return relectura.json()[0]
+
+    # El fallo más probable acá es la foránea: `org_id` tiene que nombrar una fila de
+    # `identidad.organizaciones`. Si el hub mandó un identificador que no existe, PostgREST
+    # responde 409 — y eso NO es "no se pudo provisionar" a secas, es una organización que no
+    # existe. Se registra el detalle porque el mensaje al usuario no lo puede decir.
+    print(f"[Provisión] Falló para {org_id}: {create_resp.status_code} {create_resp.text}")
+    raise HTTPException(status_code=500, detail="No se pudo provisionar la cuenta de scraping.")
 
 
 def validate_user_and_leads(org_id: str) -> dict:
@@ -620,6 +661,11 @@ def validate_user_and_leads(org_id: str) -> dict:
         raise HTTPException(status_code=400, detail="Falta org_id.")
 
     monedero = get_or_create_monedero(org_id)
+
+    # La casa no paga leads. Se devuelve el monedero igual, para que quien llama pueda mirar
+    # `sin_limite` y saltarse también SUS validaciones de tope.
+    if monedero.get("sin_limite"):
+        return monedero
 
     leads_disponibles = monedero.get("leads_disponibles_en_total", 0) or 0
     if leads_disponibles <= 0:
@@ -667,6 +713,10 @@ async def get_user_leads(org_id: str = None, cliente_id: str = None):
     return {
         "numero_leads_scrapeados": monedero.get("numero_leads_scrapeados", 0),
         "leads_disponibles_en_total": monedero.get("leads_disponibles_en_total", 0),
+        # Para que la pantalla pueda decir "sin límite" en vez de un número. Sin este campo
+        # ARIA vería "0 leads disponibles", que es cierto y es exactamente lo contrario de lo
+        # que pasa.
+        "sin_limite": bool(monedero.get("sin_limite")),
     }
 
 
@@ -715,18 +765,23 @@ async def start_scraping_job(request: ScrapingRequest):
 
     org_id = resolver_org(request.org_id, request.cliente_id)
     usuario = validate_user_and_leads(org_id)
+    sin_limite = bool(usuario.get("sin_limite"))
     leads_disponibles = usuario.get("leads_disponibles_en_total", 0) or 0
 
     # El pedido debe estar entre el mínimo del actor (~72 con emails) y el saldo.
+    #
+    # El mínimo del actor se valida SIEMPRE, con tope o sin tope: no es una regla de cobro
+    # nuestra, es que por debajo de ~72 leads Apify cobra lo mismo por menos. Saltárselo para
+    # ARIA sería tirar plata de ARIA.
     min_leads = google_maps_scraper.min_leads_for_charge(request.getEmails)
-    if leads_disponibles < min_leads:
+    if not sin_limite and leads_disponibles < min_leads:
         raise HTTPException(
             status_code=403,
             detail=f"Necesitas al menos {min_leads} leads disponibles para scrapear. Recarga para continuar.",
         )
     if request.maxLeads < min_leads:
         raise HTTPException(status_code=400, detail=f"El mínimo a scrapear es {min_leads} leads.")
-    if request.maxLeads > leads_disponibles:
+    if not sin_limite and request.maxLeads > leads_disponibles:
         raise HTTPException(status_code=400, detail=f"Solo tienes {leads_disponibles} leads disponibles.")
 
     job_id = create_scraping_job(org_id, request)
