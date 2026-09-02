@@ -97,7 +97,18 @@ def _thumbnail(snap: Dict[str, Any]) -> str:
 
 
 def build_ad_spy_items(dataset_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Normaliza cada anuncio a lo que necesita la tarjeta del panel, y ordena por longevidad."""
+    """Normaliza cada anuncio a lo que necesita la tarjeta del panel, y ordena por longevidad.
+
+    `page_profile_uri` NO es para la tarjeta: es la URL de la pagina de Facebook, y es lo unico
+    que el actor `apify/facebook-pages-scraper` acepta como entrada. Sin ella, el Espia puede
+    descubrir anunciantes y NO se les puede sacar el telefono, el email ni la web — que es lo
+    que hace el paso 2 de Prospeccion en Frio.
+
+    Estaba disponible y se tiraba: `build_facebook_ads_table_items` la lee del MISMO `snapshot`,
+    porque los dos normalizadores procesan la salida del mismo actor
+    (`curious_coder/facebook-ads-library-scraper`). La diferencia entre los dos nunca fue de
+    datos, era de que se conservaba.
+    """
     now = datetime.now(timezone.utc).timestamp()
     out: List[Dict[str, Any]] = []
 
@@ -123,6 +134,8 @@ def build_ad_spy_items(dataset_items: List[Dict[str, Any]]) -> List[Dict[str, An
             "ad_archive_id": it.get("ad_archive_id"),
             "page_name": it.get("page_name") or snap.get("page_name") or "",
             "page_id": it.get("page_id"),
+            # Mismo orden de lectura que `facebook_ads_scraper`: primero el snapshot.
+            "page_profile_uri": snap.get("page_profile_uri") or it.get("page_profile_uri") or "",
             "is_active": bool(it.get("is_active")),
             "days_active": max(days, 0),
             "start_date_formatted": it.get("start_date_formatted") or "",
