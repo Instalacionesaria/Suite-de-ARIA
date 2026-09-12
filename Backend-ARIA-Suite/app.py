@@ -275,7 +275,10 @@ WEBHOOK_BASE_URL = os.getenv("WEBHOOK_BASE_URL")
 
 # Leads gratis que recibe una organización nueva al provisionarse (primer uso).
 # Se puede sobrescribir con la env var LEADS_GRATIS_NUEVO_CLIENTE.
-LEADS_GRATIS_NUEVO_CLIENTE = int(os.getenv("LEADS_GRATIS_NUEVO_CLIENTE", "100"))
+#
+# Eran 100. Kevin (2026-09-12): *"yo creo que deberían arrancar con 500"*. Solo aplica a los
+# monederos que se abren de acá en adelante: los que ya existen conservan su saldo.
+LEADS_GRATIS_NUEVO_CLIENTE = int(os.getenv("LEADS_GRATIS_NUEVO_CLIENTE", "500"))
 
 
 # =============================================
@@ -558,7 +561,7 @@ def increment_user_leads_count(org_id: str, leads_count: int) -> bool:
     """
     Suma al histórico y descuenta del saldo: primero los gratuitos, después los pagados.
 
-    Ese orden es de PRODUCTO y no de implementación: al revés, los 100 leads de regalo
+    Ese orden es de PRODUCTO y no de implementación: al revés, los leads de regalo
     quedarían eternamente sin usar y la organización pagaría desde el primer lead.
     """
     try:
