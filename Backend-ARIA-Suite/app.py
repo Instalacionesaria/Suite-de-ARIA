@@ -911,13 +911,41 @@ async def get_job_status_and_results(job_id: str, org_id: str = None, cliente_id
     headers = get_supabase_headers()
     response = requests.get(
         f"{SUPABASE_URL}/rest/v1/{TABLA_TRABAJOS}?org_id=eq.{org_id}&id=eq.{job_id}"
-        "&select=status,results_data",
+        "&select=status,results_data,apify_actor_run_id",
         headers=headers,
     )
     if not response.json():
         raise HTTPException(status_code=404, detail="Trabajo no encontrado.")
     job_data = response.json()[0]
+
+    # ── UN ACTOR QUE FALLA EN APIFY NO AVISA ─────────────────────────────────
+    #
+    # Los webhooks registrados son los de ÉXITO (`…-succeeded`). Si el actor falla —Allpa, 2026-09-13:
+    # Google Maps con "LOCATION NOT FOUND! Input: Latinoamérica (México, Colombia, …)"— nadie escribe
+    # FAILED, el trabajo queda en RUNNING para siempre y quien lo sondea espera hasta su propio
+    # tope (la mirada del Research: diez minutos) sin saber por qué. Acá, mientras el trabajo siga
+    # abierto, se le pregunta a Apify por la corrida; si terminó mal, se cierra el trabajo con el
+    # motivo que dio el actor, que es lo que la persona necesita leer para corregir la búsqueda.
+    #
+    # Se pregunta SOLO con el trabajo abierto y con un run id: un trabajo terminado no cuesta una
+    # llamada, y uno sin run id no tiene a quién preguntarle. Y si Apify no contesta, se devuelve el
+    # estado guardado: el sondeo no puede caerse porque Apify parpadee.
+    if job_data.get("status") in ["PENDING", "RUNNING"] and job_data.get("apify_actor_run_id"):
+        try:
+            run = ApifyClient(apify_token).run(job_data["apify_actor_run_id"]).get() or {}
+            estado_apify = run.get("status")
+            if estado_apify in ["FAILED", "ABORTED", "TIMED-OUT"]:
+                motivo = run.get("statusMessage") or f"El actor terminó en {estado_apify}."
+                update_job_results(job_id, "FAILED", error_message=str(motivo))
+                job_data["status"] = "FAILED"
+                job_data["error_message"] = str(motivo)
+                print(f"Trabajo {job_id} cerrado como FAILED: Apify reportó {estado_apify} — {motivo}")
+        except Exception as e:
+            print(f"No se pudo consultar la corrida de Apify del trabajo {job_id}: {e}")
+
     final_response = {"status": job_data.get("status")}
+    if job_data.get("error_message"):
+        final_response["error_message"] = job_data["error_message"]
     if job_data.get("status") == "COMPLETED" and job_data.get("results_data"):
         final_response["results"] = job_data["results_data"]
     return final_response
