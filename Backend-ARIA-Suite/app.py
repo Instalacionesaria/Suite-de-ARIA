@@ -716,10 +716,14 @@ def get_or_create_monedero(org_id: str) -> dict:
     # llegan juntas —el panel pide el saldo mientras el alumno ya apretó scrapear— las dos ven
     # el monedero vacío y las dos insertan. Con `merge` la segunda PISA a la primera y devuelve
     # el saldo a 100. Con `ignore` no entra, no devuelve fila, y se relee abajo.
+    # `leads_regalados` (migración 018) guarda cuánto se REGALÓ en total; `leads_base_gratuitos` es
+    # lo que queda de ese regalo. Es lo que la empresa ve en Tools como «500 de regalo» después de
+    # gastar algo. Nacen iguales; el segundo baja con cada scraping y el primero no.
     nuevo = {
         "org_id": org_id,
         "numero_leads_scrapeados": 0,
         "leads_base_gratuitos": LEADS_GRATIS_NUEVO_CLIENTE,
+        "leads_regalados": LEADS_GRATIS_NUEVO_CLIENTE,
         "leads_adicionales_pagados": 0,
     }
     create_resp = requests.post(
